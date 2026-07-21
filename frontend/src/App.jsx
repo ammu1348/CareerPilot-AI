@@ -34,7 +34,7 @@ function App() {
     formData.append("file", file);
 
     try {
-      const response = await fetch("https://careerpilot-ai-1-kat9.onrender.com/upload",  {
+      const response = await fetch("https://careerpilot-ai-voej.onrender.com/upload", {
         method: "POST",
         body: formData,
       });
