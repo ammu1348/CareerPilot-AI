@@ -1,24 +1,16 @@
-def analyze_resume(text):
-    skills = [
-        "Python",
-        "Java",
-        "SQL",
-        "Machine Learning",
-        "Data Analytics",
-        "Git",
-        "HTML",
-        "CSS",
-        "JavaScript",
-        "FastAPI",
-        "C++"
-    ]
+from services.skill_extractor import extract_skills
 
-    found_skills = []
+def analyze_resume(text: str) -> dict:
+    """Analyze resume text to extract skills and calculate resume score."""
+    if not text:
+        return {
+            "score": 0,
+            "skills": []
+        }
 
-    for skill in skills:
-        if skill.lower() in text.lower():
-            found_skills.append(skill)
+    found_skills = extract_skills(text)
 
+    # Resume score calculation (preserving original scoring method, max 100)
     score = len(found_skills) * 10
     if score > 100:
         score = 100
