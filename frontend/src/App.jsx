@@ -87,7 +87,7 @@ function App() {
         // If local API fails and it wasn't explicitly overridden, try the deployed endpoint as fallback
         if (API_BASE_URL.includes("localhost") || API_BASE_URL.includes("127.0.0.1")) {
           try {
-            response = await fetch("https://careerpilot-ai-3-fky4.onrender.com/upload", {
+           response = await fetch("https://careerpilot-ai-5-gtc9.onrender.com/upload", {
               method: "POST",
               body: formData,
             });
