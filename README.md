@@ -84,3 +84,5 @@ git clone https://github.com/ammu1348/CareerPilot-AI.git
 ```bash
 cd frontend
 npm
+Deployment configuration updated.
+
