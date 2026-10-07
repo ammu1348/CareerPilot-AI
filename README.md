@@ -9,7 +9,9 @@ CareerPilot AI turns a text-based resume PDF into a practical, role-focused revi
 - Produces an explainable resume-readiness signal based on five visible content checks: skills (35 points), sections (25), readable length (20), contact details (10), and measurable impact (10). It is guidance—not an ATS score or hiring prediction.
 - Ranks supported roles by overlap with detected skills and calculates exact skill-gap percentages and learning prompts.
 - Exports the current analysis as a paginated PDF.
-- Works on mobile and desktop, with keyboard-accessible controls, clear error states, and optional AI consent.
+- Provides an opt-in AI career-coach Q&A using only the question, detected skill summary, and selected role—not the original PDF text.
+- Includes a protected, single-admin operations console at `/admin/login` with live AI/service status, privacy controls, and a searchable role catalog.
+- Works on mobile and desktop, with keyboard-accessible controls, clear error states, reduced-motion support, and polished but restrained animation.
 
 Supported role tracks: Data Analyst, AI/ML Engineer, Software Engineer, Web Developer, Java Developer, Python Developer, Data Scientist, Frontend Developer, Backend Developer, and Full Stack Developer. Role requirements, aliases, and learning prompts live in `shared/career_data.json` and are imported by both client and API.
 
@@ -52,9 +54,34 @@ For a separately hosted API, create `frontend/.env.local` with:
 VITE_API_URL=https://your-api.example.com
 ```
 
-For Gemini insights, set `GEMINI_API_KEY` in the backend environment. Optionally set `GEMINI_MODEL`; the default is `gemini-2.5-flash-lite`. The resume text is sent to Gemini only when the user checks the opt-in box before upload. Core skill analysis works without a key.
+For Gemini insights and the AI career coach, set `GEMINI_API_KEY` in the backend environment. Optionally set `GEMINI_MODEL`; the default is `gemini-2.5-flash-lite`. Upload-based insights send resume text only after the user opts in. The coach requires a separate confirmation and sends only the question, detected skills, and selected role. Without a key, deterministic analysis and learning guidance continue to work.
 
-For production CORS, set `CORS_ALLOW_ORIGINS` to a comma-separated list of trusted frontend origins. Local development and the supported Netlify, Vercel, and Arena preview host patterns are allowed by default.
+For a separately hosted frontend/API, set `CORS_ALLOW_ORIGINS` to a comma-separated list of exact trusted frontend origins. There is no permissive wildcard CORS default. Local development and Arena previews use the same-origin `/api` Vite proxy.
+
+## Admin login and console
+
+The admin console is a **single-operator control panel**, not public user registration. Resume analysis remains available without an account. There are no default passwords, demo credentials, or admin accounts stored in the repository. Admin routes are disabled until the deployment owner configures credentials.
+
+From `backend/`, create a salted PBKDF2 password hash (the command prompts twice and prints only the hash):
+
+```bash
+python -m services.admin_auth
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+Set the generated values in the backend environment (for local development, use the ignored `backend/.env` file; in production, use the host's secret manager):
+
+```env
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD_HASH=<hash printed by the password command>
+ADMIN_SESSION_SECRET=<random value printed by secrets.token_urlsafe>
+ADMIN_SESSION_TTL_SECONDS=28800
+ADMIN_COOKIE_SECURE=false
+```
+
+`ADMIN_COOKIE_SECURE=false` is only for plain-HTTP localhost development. Use `true` over HTTPS. The default cookie is HTTP-only, SameSite strict, signed, and expires after eight hours. For a separately hosted frontend and API, configure an exact comma-separated `CORS_ALLOW_ORIGINS` allowlist and set `ADMIN_COOKIE_SAMESITE=none` with `ADMIN_COOKIE_SECURE=true`; same-origin deployment through the `/api` proxy is simpler and preferred. Do not use a wildcard origin with admin cookies.
+
+The console shows live API configuration, optional Gemini availability, upload/extraction safeguards, and the shared role catalog. It intentionally does not store resumes, user accounts, or per-user analytics.
 
 ## Tests and checks
 
@@ -79,7 +106,10 @@ Backend tests generate small in-memory PDFs, so they do not depend on private or
 - `GET /roles` — available roles and required skills.
 - `POST /skill-gap` — JSON body: `{ "skills": ["Python", "SQL"], "target_role": "Data Analyst" }`.
 - `POST /upload` — multipart PDF field `file`; optional boolean `include_ai` (defaults to `false`). Returns summary signals only; extracted resume text is not returned.
+- `POST /career-coach` — requires `consent: true`; accepts a question, detected skill summary, and target role, never the PDF text.
+- `POST /admin/auth/login`, `GET /admin/auth/me`, and `POST /admin/auth/logout` — single-admin session endpoints; require environment configuration.
+- `GET /admin/overview` — session-protected operational status and career-role catalog; does not expose API keys or resume data.
 
 ## Privacy notes
 
-Uploaded documents are processed in temporary storage and the API does not save them as user records. Analysis responses omit the extracted resume text and personal details. If Gemini insights are enabled, the resume text (up to the first 6,000 characters) is sent to the configured Gemini service. Avoid uploading sensitive documents if you are not comfortable with that optional processing. The app has no account system or persistent report storage; the PDF report is created in your browser.
+Uploaded documents are processed temporarily; the API does not save resumes as user records, and analysis responses omit extracted resume text and personal details. If upload-based Gemini insights are enabled, up to the first 6,000 characters are sent to the configured Gemini service. The separate coach sends only the user's explicit question and a canonical skill/role summary. Avoid sharing information you are not comfortable sending to that optional service. The public analyzer has no end-user accounts or persistent report storage; the PDF report is created in the browser. The single admin credential is configured by the deployment owner and is not an end-user profile.

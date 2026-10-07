@@ -1,28 +1,36 @@
 """API contract and upload-safety tests."""
 
+import pytest
 import routes.resume as resume_routes
-from app import app
+from app import app, create_app
 from fastapi.testclient import TestClient
 from testing_utils import build_text_pdf
 
 client = TestClient(app)
 
 
-def test_health_and_arena_preview_cors():
+def test_health_and_exact_configured_origin_cors(monkeypatch):
     assert client.get("/health").json() == {"status": "ok"}
-    response = client.options(
-        "/upload",
+    preview_origin = "https://5173-preview-sandbox.e2b.app"
+    monkeypatch.setenv("CORS_ALLOW_ORIGINS", preview_origin)
+    cors_client = TestClient(create_app())
+    response = cors_client.options(
+        "/admin/auth/login",
         headers={
-            "Origin": "https://5173-preview-sandbox.e2b.app",
+            "Origin": preview_origin,
             "Access-Control-Request-Method": "POST",
             "Access-Control-Request-Headers": "content-type",
         },
     )
     assert response.status_code == 200
-    assert (
-        response.headers["access-control-allow-origin"]
-        == "https://5173-preview-sandbox.e2b.app"
-    )
+    assert response.headers["access-control-allow-origin"] == preview_origin
+    assert response.headers["access-control-allow-credentials"] == "true"
+
+
+def test_cors_rejects_wildcard_origins(monkeypatch):
+    monkeypatch.setenv("CORS_ALLOW_ORIGINS", "*")
+    with pytest.raises(ValueError, match="exact origins"):
+        create_app()
 
 
 def test_roles_endpoint_returns_supported_requirements():

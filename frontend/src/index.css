@@ -39,3 +39,13 @@ button:disabled {
 #root {
   min-height: 100vh;
 }
+
+.route-loading {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  color: #777c91;
+  background: #f6f7fb;
+  font-size: 13px;
+  font-weight: 650;
+}

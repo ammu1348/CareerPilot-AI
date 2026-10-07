@@ -12,8 +12,10 @@ import {
   FiFileText,
   FiInfo,
   FiLayers,
-  FiSun,
   FiLoader,
+  FiMessageCircle,
+  FiSend,
+  FiSun,
   FiLock,
   FiRefreshCw,
   FiShield,
@@ -117,8 +119,16 @@ function App() {
   const [selectedRole, setSelectedRole] = useState("Data Analyst");
   const [dragActive, setDragActive] = useState(false);
   const [reportStatus, setReportStatus] = useState("");
+  const [coachQuestion, setCoachQuestion] = useState("");
+  const [coachConsent, setCoachConsent] = useState(false);
+  const [coachAnswer, setCoachAnswer] = useState("");
+  const [coachAiUsed, setCoachAiUsed] = useState(false);
+  const [coachLoading, setCoachLoading] = useState(false);
+  const [coachError, setCoachError] = useState("");
 
   const fileInputRef = useRef(null);
+  const coachRequestRef = useRef(null);
+  const coachTimeoutRef = useRef(null);
   const resultsRef = useRef(null);
   const resultsHeadingRef = useRef(null);
   const skillGapRef = useRef(null);
@@ -140,7 +150,21 @@ function App() {
     resultsHeadingRef.current?.focus({ preventScroll: true });
   }, [result]);
 
+  const resetCoach = () => {
+    coachRequestRef.current?.abort();
+    coachRequestRef.current = null;
+    window.clearTimeout(coachTimeoutRef.current);
+    coachTimeoutRef.current = null;
+    setCoachQuestion("");
+    setCoachConsent(false);
+    setCoachAnswer("");
+    setCoachAiUsed(false);
+    setCoachLoading(false);
+    setCoachError("");
+  };
+
   const clearFile = () => {
+    resetCoach();
     setFile(null);
     setResult(null);
     setSelectedRole("Data Analyst");
@@ -151,6 +175,7 @@ function App() {
 
   const validateAndSetFile = async (candidate) => {
     if (!candidate || loading) return;
+    resetCoach();
     setResult(null);
     setSelectedRole("Data Analyst");
     setError("");
@@ -203,6 +228,7 @@ function App() {
   };
 
   const handleReset = () => {
+    resetCoach();
     setFile(null);
     setResult(null);
     setError("");
@@ -219,6 +245,7 @@ function App() {
     if (!file || loading) return;
 
     setLoading(true);
+    resetCoach();
     setResult(null);
     setSelectedRole("Data Analyst");
     setError("");
@@ -272,8 +299,66 @@ function App() {
     if (!Object.hasOwn(JOB_ROLES, role)) return;
     setSelectedRole(role);
     setReportStatus("");
+    coachRequestRef.current?.abort();
+    coachRequestRef.current = null;
+    window.clearTimeout(coachTimeoutRef.current);
+    coachTimeoutRef.current = null;
+    setCoachLoading(false);
+    setCoachAnswer("");
+    setCoachAiUsed(false);
+    setCoachConsent(false);
+    setCoachError("");
     if (scrollToGap) {
       skillGapRef.current?.scrollIntoView({ behavior: getScrollBehavior(), block: "start" });
+    }
+  };
+
+  const handleAskCoach = async (event) => {
+    event.preventDefault();
+    if (!result || !coachConsent || coachQuestion.trim().length < 5 || coachLoading) return;
+
+    setCoachLoading(true);
+    setCoachError("");
+    setCoachAnswer("");
+    const controller = new AbortController();
+    coachRequestRef.current = controller;
+    coachTimeoutRef.current = window.setTimeout(() => controller.abort(), 90_000);
+    try {
+      const response = await fetch(`${API_BASE_URL}/career-coach`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          question: coachQuestion.trim(),
+          skills: result.skills,
+          target_role: selectedRole,
+          consent: true,
+        }),
+        signal: controller.signal,
+      });
+      const data = await response.json().catch(() => null);
+      if (coachRequestRef.current !== controller) return;
+      if (!response.ok) {
+        throw new Error(data?.detail || `The career coach returned an error (${response.status}).`);
+      }
+      setCoachAnswer(typeof data?.answer === "string" ? data.answer : "The coach did not return a response. Please try again.");
+      setCoachAiUsed(Boolean(data?.ai_used));
+      setCoachConsent(false);
+    } catch (requestError) {
+      if (coachRequestRef.current !== controller) return;
+      if (requestError?.name === "AbortError") {
+        setCoachError("The coach took too long to respond. Please try again.");
+      } else if (requestError instanceof TypeError) {
+        setCoachError("We couldn't reach the career coach. Check that the backend is running.");
+      } else {
+        setCoachError(requestError?.message || "The coach could not answer just now. Please try again.");
+      }
+    } finally {
+      if (coachRequestRef.current === controller) {
+        window.clearTimeout(coachTimeoutRef.current);
+        coachRequestRef.current = null;
+        coachTimeoutRef.current = null;
+        setCoachLoading(false);
+      }
     }
   };
 
@@ -300,6 +385,7 @@ function App() {
           <nav className="header-nav" aria-label="Main navigation">
             <a href="#how-it-works">How it works</a>
             <a href="#privacy">Privacy</a>
+            <a href="/admin/login">Admin</a>
             <a className="header-cta" href="#analyzer">Analyze a resume <FiArrowRight aria-hidden="true" /></a>
           </nav>
         </div>
@@ -638,6 +724,31 @@ function App() {
               )}
             </section>
 
+            <section className="career-coach-card panel-card" aria-labelledby="coach-title">
+              <div className="coach-card-heading">
+                <span className="coach-heading-icon"><FiMessageCircle aria-hidden="true" /></span>
+                <div><div className="section-kicker">A PERSONAL NEXT STEP</div><h2 id="coach-title">Ask your career coach</h2></div>
+                <span className="coach-ai-badge"><FiSun aria-hidden="true" /> AI optional</span>
+              </div>
+              <p className="coach-intro">Get a focused answer about <strong>{selectedRole}</strong>, your skills, or what to learn next. Your original resume is never sent in this chat.</p>
+              {coachAnswer && (
+                <div className="coach-answer" aria-live="polite">
+                  <div className="coach-answer-label"><span><FiSun aria-hidden="true" /> {coachAiUsed ? "Gemini career insight" : "CareerPilot guidance"}</span><button type="button" onClick={() => { setCoachAnswer(""); setCoachAiUsed(false); }} aria-label="Dismiss coach response"><FiX aria-hidden="true" /></button></div>
+                  <p>{coachAnswer}</p>
+                </div>
+              )}
+              <form className="career-coach-form" onSubmit={handleAskCoach}>
+                <label className="coach-question-label" htmlFor="coach-question">What would you like help with?</label>
+                <textarea id="coach-question" value={coachQuestion} onChange={(event) => { setCoachQuestion(event.target.value.slice(0, 600)); setCoachConsent(false); }} placeholder="For example: What should I learn first to become a Data Analyst?" rows={3} maxLength={600} required disabled={coachLoading} />
+                {!coachAnswer && <div className="coach-prompt-chips" aria-label="Suggested questions">
+                  {["What should I learn first?", "How can I show my impact?", "Suggest a portfolio project"].map((prompt) => <button type="button" key={prompt} disabled={coachLoading} onClick={() => { setCoachQuestion(prompt); setCoachConsent(false); }}>{prompt}</button>)}
+                </div>}
+                <label className="coach-consent-row"><input type="checkbox" checked={coachConsent} onChange={(event) => setCoachConsent(event.target.checked)} disabled={coachLoading} /><span className="coach-checkbox"><FiCheck aria-hidden="true" /></span><span>Send this question, detected skills, and target role to the optional coach. My resume text is not included.</span></label>
+                {coachError && <div className="coach-error" role="alert"><FiAlertCircle aria-hidden="true" />{coachError}</div>}
+                <div className="coach-submit-row"><span className="coach-character-count">{coachQuestion.length}/600</span><button type="submit" className="coach-submit-button" disabled={coachLoading || !coachConsent || coachQuestion.trim().length < 5}>{coachLoading ? <><FiLoader className="spin" aria-hidden="true" /> Thinking...</> : <>Ask CareerPilot <FiSend aria-hidden="true" /></>}</button></div>
+              </form>
+            </section>
+
             <div className="insight-grid">
               <section className="insight-card panel-card" aria-labelledby="feedback-title">
                 <div className="section-heading-row">
@@ -670,6 +781,7 @@ function App() {
           <a className="brand brand-small" href="#top"><span className="brand-mark" aria-hidden="true"><FiActivity /></span><span className="brand-name">careerpilot<span>AI</span></span></a>
           <p>Designed to support your next step - not make the decision for you.</p>
           <a href="#how-it-works">How the analysis works <FiArrowRight aria-hidden="true" /></a>
+          <a href="/admin/login" className="footer-admin-link"><FiLock aria-hidden="true" /> Admin console</a>
         </footer>
       </main>
     </div>

@@ -4,43 +4,48 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from routes.admin import router as admin_router
 from routes.resume import router as resume_router
 
-app = FastAPI(
-    title="CareerPilot AI",
-    description="Privacy-conscious resume signals and deterministic career skill-gap analysis.",
-    version="1.0.0",
-)
 
-configured_origins = [
-    origin.strip()
-    for origin in os.getenv("CORS_ALLOW_ORIGINS", "").split(",")
-    if origin.strip()
-]
+def create_app() -> FastAPI:
+    """Build the API with exact, environment-configured browser origins."""
+    application = FastAPI(
+        title="CareerPilot AI",
+        description="Privacy-conscious resume signals and deterministic career skill-gap analysis.",
+        version="1.0.0",
+    )
+    configured_origins = [
+        origin.strip().rstrip("/")
+        for origin in os.getenv("CORS_ALLOW_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+    if "*" in configured_origins:
+        raise ValueError(
+            "CORS_ALLOW_ORIGINS must contain exact origins, not a wildcard."
+        )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=configured_origins,
-    # Permit local development and the app's Netlify, Vercel, and Arena preview
-    # hosts. Production deployments can further restrict this via
-    # CORS_ALLOW_ORIGINS. No cookies or credentialed browser requests are used.
-    allow_origin_regex=(
-        r"^(?:https?://(?:localhost|127\.0\.0\.1)(?::\d+)?|"
-        r"https://(?:[a-z0-9-]+\.)*(?:netlify\.app|vercel\.app|e2b\.app))$"
-    ),
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Accept"],
-)
+    application.add_middleware(
+        CORSMiddleware,
+        # Exact origins are important because admin authentication uses cookies.
+        # Local and Arena clients use the same-origin /api development proxy.
+        allow_origins=configured_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Accept"],
+    )
+    application.include_router(resume_router)
+    application.include_router(admin_router)
 
-app.include_router(resume_router)
+    @application.get("/")
+    def home():
+        return {"message": "CareerPilot AI API is running", "status": "ok"}
+
+    @application.get("/health")
+    def health_check():
+        return {"status": "ok"}
+
+    return application
 
 
-@app.get("/")
-def home():
-    return {"message": "CareerPilot AI API is running", "status": "ok"}
-
-
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
+app = create_app()

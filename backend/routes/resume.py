@@ -2,24 +2,40 @@
 
 from pathlib import PurePosixPath
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from services.analyzer import analyze_resume
 from services.feedback import generate_feedback
-from services.gemini_service import analyze_with_gemini
+from services.gemini_service import analyze_with_gemini, answer_career_question
 from services.job_recommender import recommend_jobs
 from services.pdf_parser import extract_text
-from services.role_skills import JOB_ROLE_REQUIREMENTS, calculate_skill_gap
+from services.role_skills import (
+    JOB_ROLE_REQUIREMENTS,
+    SKILL_NORMALIZATION_MAP,
+    calculate_skill_gap,
+    normalize_skill,
+    normalize_skill_list,
+)
 from starlette.concurrency import run_in_threadpool
 
 router = APIRouter()
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 PDF_HEADER_SEARCH_BYTES = 1024
+KNOWN_SKILLS = set(SKILL_NORMALIZATION_MAP.values()) | {
+    skill for required in JOB_ROLE_REQUIREMENTS.values() for skill in required
+}
 
 
 class SkillGapRequest(BaseModel):
     skills: list[str] = Field(default_factory=list, max_length=100)
     target_role: str = Field(min_length=1, max_length=80)
+
+
+class CareerCoachRequest(BaseModel):
+    question: str = Field(min_length=5, max_length=600)
+    skills: list[str] = Field(default_factory=list, max_length=60)
+    target_role: str = Field(min_length=1, max_length=80)
+    consent: bool = False
 
 
 @router.get("/roles")
@@ -35,6 +51,29 @@ def get_job_roles():
 def analyze_gap(request: SkillGapRequest):
     """Calculate a deterministic skill gap for the requested target role."""
     return calculate_skill_gap(request.skills, request.target_role)
+
+
+@router.post("/career-coach")
+async def career_coach(request: CareerCoachRequest):
+    """Answer an explicit user question using skills and role only, never PDF text."""
+    if not request.consent:
+        raise HTTPException(
+            status_code=403,
+            detail="Please opt in before sending a question and skill summary to the career coach.",
+        )
+    question = request.question.strip()
+    if len(question) < 5:
+        raise HTTPException(status_code=422, detail="Please enter a longer question.")
+    accepted_skills = [
+        skill for skill in request.skills if normalize_skill(skill) in KNOWN_SKILLS
+    ]
+    skills = normalize_skill_list(accepted_skills)[:40]
+    return await run_in_threadpool(
+        answer_career_question,
+        question,
+        skills,
+        request.target_role,
+    )
 
 
 def _error(message: str) -> dict:
