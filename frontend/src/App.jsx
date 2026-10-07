@@ -1,704 +1,677 @@
-import { useState, useRef } from "react";
-import jsPDF from "jspdf";
-
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  CircularProgressbar,
-  buildStyles,
-} from "react-circular-progressbar";
-import "react-circular-progressbar/dist/styles.css";
+  FiActivity,
+  FiAlertCircle,
+  FiArrowRight,
+  FiAward,
+  FiBriefcase,
+  FiCheck,
+  FiCheckCircle,
+  FiChevronDown,
+  FiDownload,
+  FiFileText,
+  FiInfo,
+  FiLayers,
+  FiSun,
+  FiLoader,
+  FiLock,
+  FiRefreshCw,
+  FiShield,
+  FiStar,
+  FiTarget,
+  FiTrash2,
+  FiUploadCloud,
+  FiX,
+} from "react-icons/fi";
 
-import {
-  FaFileUpload,
-  FaTools,
-  FaBriefcase,
-  FaCommentDots,
-  FaBullseye,
-  FaCheckCircle,
-  FaTimesCircle,
-  FaLightbulb,
-  FaChartLine,
-  FaArrowRight,
-  FaRobot,
-} from "react-icons/fa";
+import { calculateSkillGap, JOB_ROLES } from "./data/jobRoles";
+import "./App.css";
 
-import {
-  JOB_ROLES,
-  calculateSkillGap,
-} from "./data/jobRoles";
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const API_BASE_URL = (import.meta.env.VITE_API_URL || "/api").replace(/\/+$/, "");
+
+const SCORE_PARTS = [
+  ["technical_skills", "Relevant skills", 35],
+  ["resume_sections", "Resume sections", 25],
+  ["length", "Readable length", 20],
+  ["contact_details", "Contact details", 10],
+  ["measurable_impact", "Measurable impact", 10],
+];
+
+function formatFileSize(bytes) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function getScrollBehavior() {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? "auto" : "smooth";
+}
+
+function getScoreLabel(score) {
+  if (score >= 80) return "Strong signals";
+  if (score >= 60) return "Good foundation";
+  if (score >= 40) return "Room to build";
+  return "Early signals";
+}
+
+function normalizeAnalysis(data) {
+  if (!data || data.status !== "success" || !Array.isArray(data.skills)) {
+    throw new Error("The analyzer returned an incomplete response. Please try again.");
+  }
+
+  const skills = [...new Set(data.skills.filter((skill) => typeof skill === "string" && skill.trim()))];
+  const recommendedJobs = Array.isArray(data.recommended_jobs)
+    ? data.recommended_jobs.filter((role) => typeof role === "string" && Object.hasOwn(JOB_ROLES, role))
+    : [];
+  const numericScore = Number(data.score);
+  const score = Number.isFinite(numericScore) ? Math.max(0, Math.min(100, numericScore)) : 0;
+
+  return {
+    filename: typeof data.filename === "string" ? data.filename : "Resume.pdf",
+    score,
+    score_breakdown: data.score_breakdown && typeof data.score_breakdown === "object" ? data.score_breakdown : {},
+    word_count: Number.isFinite(Number(data.word_count)) ? Number(data.word_count) : 0,
+    sections: Array.isArray(data.sections) ? data.sections.filter((section) => typeof section === "string") : [],
+    has_contact_details: Boolean(data.has_contact_details),
+    has_quantified_impact: Boolean(data.has_quantified_impact),
+    skills,
+    feedback: typeof data.feedback === "string" ? data.feedback : "Your resume was analyzed successfully.",
+    recommended_jobs: recommendedJobs,
+    ai_analysis: typeof data.ai_analysis === "string" ? data.ai_analysis : "AI career insights are not available for this analysis.",
+    ai_enabled: Boolean(data.ai_enabled),
+  };
+}
+
+function ScoreRing({ score }) {
+  const radius = 47;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference * (1 - score / 100);
+
+  return (
+    <div className="score-ring" role="img" aria-label={`Resume readiness signal: ${score} out of 100`}>
+      <svg viewBox="0 0 112 112" aria-hidden="true">
+        <circle className="score-ring-track" cx="56" cy="56" r={radius} />
+        <circle
+          className="score-ring-progress"
+          cx="56"
+          cy="56"
+          r={radius}
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+        />
+      </svg>
+      <div className="score-ring-value">
+        <strong>{score}</strong>
+        <span>out of 100</span>
+      </div>
+    </div>
+  );
+}
 
 function App() {
   const [file, setFile] = useState(null);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [includeAi, setIncludeAi] = useState(false);
   const [selectedRole, setSelectedRole] = useState("Data Analyst");
+  const [dragActive, setDragActive] = useState(false);
+  const [reportStatus, setReportStatus] = useState("");
 
-  const skillGapSectionRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const resultsRef = useRef(null);
+  const resultsHeadingRef = useRef(null);
+  const skillGapRef = useRef(null);
 
-  // Dynamic API Base URL supporting local development and environment variables
-  const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+  const roleList = Object.keys(JOB_ROLES);
+  const currentGap = useMemo(
+    () => calculateSkillGap(result?.skills || [], selectedRole),
+    [result?.skills, selectedRole],
+  );
+  const score = result?.score ?? 0;
+  const scoreBreakdown = result?.score_breakdown || {};
+  const hasSuggestedRoleOverlap = Boolean(result?.recommended_jobs?.some(
+    (role) => calculateSkillGap(result.skills, role).matchedSkills.length > 0,
+  ));
 
-  // Calculate current deterministic skill gap based on extracted skills and selected target role
-  const currentGap = result?.skills
-    ? calculateSkillGap(result.skills, selectedRole)
-    : calculateSkillGap([], selectedRole);
+  useEffect(() => {
+    if (!result) return;
+    resultsRef.current?.scrollIntoView({ behavior: getScrollBehavior(), block: "start" });
+    resultsHeadingRef.current?.focus({ preventScroll: true });
+  }, [result]);
 
-  const handleFileChange = (e) => {
-    const selected = e.target.files[0];
-    if (!selected) return;
-
-    if (!selected.name.toLowerCase().endsWith(".pdf")) {
-      setError("Please select a valid PDF file (.pdf). Other formats are not supported.");
-      setFile(null);
-      return;
-    }
-
-    if (selected.size === 0) {
-      setError("The selected file is empty. Please choose a valid resume document.");
-      setFile(null);
-      return;
-    }
-
+  const clearFile = () => {
+    setFile(null);
+    setResult(null);
+    setSelectedRole("Data Analyst");
     setError("");
-    setFile(selected);
+    setReportStatus("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const handleUpload = async () => {
-    if (!file) {
-      setError("Please select a valid PDF file before uploading.");
+  const validateAndSetFile = async (candidate) => {
+    if (!candidate || loading) return;
+    setResult(null);
+    setSelectedRole("Data Analyst");
+    setError("");
+    setReportStatus("");
+
+    if (!candidate.name.toLowerCase().endsWith(".pdf")) {
+      setFile(null);
+      setError("Please choose a PDF file. Other file formats are not supported yet.");
+      return;
+    }
+    if (!candidate.size) {
+      setFile(null);
+      setError("This file is empty. Please choose a valid PDF resume.");
+      return;
+    }
+    if (candidate.size > MAX_FILE_BYTES) {
+      setFile(null);
+      setError("This PDF is larger than 10 MB. Please choose a smaller file.");
       return;
     }
 
-    setLoading(true);
-    setError("");
+    try {
+      const header = new TextDecoder().decode(await candidate.slice(0, 1024).arrayBuffer());
+      if (!header.includes("%PDF-")) {
+        setFile(null);
+        setError("This file does not look like a PDF. Please select a valid PDF resume.");
+        return;
+      }
+    } catch {
+      setFile(null);
+      setError("We couldn't read this file. Please choose another PDF and try again.");
+      return;
+    }
+
+    setFile(candidate);
+  };
+
+  const handleFileInput = (event) => {
+    const selected = event.currentTarget.files?.[0];
+    // Clear the native value so choosing the same file a second time still fires change.
+    event.currentTarget.value = "";
+    void validateAndSetFile(selected);
+  };
+
+  const handleDrop = (event) => {
+    event.preventDefault();
+    setDragActive(false);
+    const droppedFile = event.dataTransfer.files?.[0];
+    if (droppedFile) void validateAndSetFile(droppedFile);
+  };
+
+  const handleReset = () => {
+    setFile(null);
     setResult(null);
+    setError("");
+    setReportStatus("");
+    setIncludeAi(false);
+    setSelectedRole("Data Analyst");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    window.scrollTo({ top: 0, behavior: getScrollBehavior() });
+    fileInputRef.current?.focus({ preventScroll: true });
+  };
+
+  const handleUpload = async (event) => {
+    event.preventDefault();
+    if (!file || loading) return;
+
+    setLoading(true);
+    setResult(null);
+    setSelectedRole("Data Analyst");
+    setError("");
+    setReportStatus("");
 
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("include_ai", String(includeAi));
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 120_000);
 
     try {
-      let response;
-      try {
-        response = await fetch(`${API_BASE_URL}/upload`, {
-          method: "POST",
-          body: formData,
-        });
-      } catch (networkErr) {
-        // If local API fails and it wasn't explicitly overridden, try the deployed endpoint as fallback
-        if (API_BASE_URL.includes("localhost") || API_BASE_URL.includes("127.0.0.1")) {
-          try {
-           response = await fetch("https://careerpilot-ai-5-gtc9.onrender.com/upload", {
-              method: "POST",
-              body: formData,
-            });
-          } catch {
-            throw networkErr;
-          }
-        } else {
-          throw networkErr;
-        }
-      }
+      const response = await fetch(`${API_BASE_URL}/upload`, {
+        method: "POST",
+        body: formData,
+        signal: controller.signal,
+      });
+      const data = await response.json().catch(() => null);
 
       if (!response.ok) {
-        throw new Error(`Server returned HTTP ${response.status}`);
+        const detail = data?.detail || data?.message;
+        throw new Error(typeof detail === "string" ? detail : `The analyzer returned an error (${response.status}).`);
+      }
+      if (data?.status === "error") {
+        throw new Error(data.message || "We couldn't analyze this resume. Please check the PDF and try again.");
       }
 
-      const data = await response.json();
-
-      if (data.status === "error") {
-        setError(data.message || "Unable to process this resume. Please ensure it is a valid text-based PDF.");
-        return;
-      }
-
-      setResult(data);
-
-      // Pre-select the first recommended job if it matches a valid target role
-      if (data.recommended_jobs && data.recommended_jobs.length > 0) {
-        const topJob = data.recommended_jobs[0];
-        if (JOB_ROLES[topJob]) {
-          setSelectedRole(topJob);
-        } else {
-          setSelectedRole("Data Analyst");
-        }
+      const analysis = normalizeAnalysis(data);
+      setResult(analysis);
+      const suggestedRole = data.skill_gap?.target_role;
+      setSelectedRole(
+        Object.hasOwn(JOB_ROLES, suggestedRole)
+          ? suggestedRole
+          : (analysis.recommended_jobs[0] || "Data Analyst"),
+      );
+    } catch (requestError) {
+      if (requestError?.name === "AbortError") {
+        setError("The analysis took too long. Try a smaller PDF or disable optional AI insights and try again.");
+      } else if (requestError instanceof TypeError) {
+        setError("We couldn't reach the analyzer. Check that the backend is running and the API URL is configured correctly.");
       } else {
-        setSelectedRole("Data Analyst");
+        setError(requestError?.message || "Something went wrong while analyzing this resume. Please try again.");
       }
-    } catch (err) {
-      console.error("Upload error:", err);
-      setError("❌ Unable to connect to the backend server. Please make sure the backend service is running.");
     } finally {
+      window.clearTimeout(timeoutId);
       setLoading(false);
     }
   };
 
-  // Switch role and optionally scroll to gap analysis section
-  const handleSelectRole = (role) => {
+  const handleSelectRole = (role, scrollToGap = false) => {
+    if (!Object.hasOwn(JOB_ROLES, role)) return;
     setSelectedRole(role);
-    if (skillGapSectionRef.current) {
-      skillGapSectionRef.current.scrollIntoView({ behavior: "smooth" });
+    setReportStatus("");
+    if (scrollToGap) {
+      skillGapRef.current?.scrollIntoView({ behavior: getScrollBehavior(), block: "start" });
     }
   };
 
-  // Color helper for skill match progress bar
-  const getProgressColors = (percentage) => {
-    if (percentage >= 75) {
-      return { textColor: "#15803d", pathColor: "#16a34a", trailColor: "#d1fae5", badgeBg: "bg-green-100 text-green-800 border-green-300" };
-    } else if (percentage >= 45) {
-      return { textColor: "#b45309", pathColor: "#d97706", trailColor: "#fef3c7", badgeBg: "bg-amber-100 text-amber-800 border-amber-300" };
-    } else {
-      return { textColor: "#b91c1c", pathColor: "#dc2626", trailColor: "#fee2e2", badgeBg: "bg-red-100 text-red-800 border-red-300" };
-    }
-  };
-
-  // Extended PDF Download including Resume Analysis + Skill Gap Analysis
-  const downloadReport = () => {
+  const handleDownloadReport = async () => {
     if (!result) return;
-
-    const doc = new jsPDF();
-    const pageWidth = doc.internal.pageSize.getWidth();
-    let y = 20;
-
-    const checkPageBreak = (neededSpace = 20) => {
-      if (y + neededSpace > 275) {
-        doc.addPage();
-        y = 20;
-      }
-    };
-
-    // Header
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(22);
-    doc.setTextColor(37, 99, 235); // Blue 600
-    doc.text("CareerPilot AI", 20, y);
-    y += 10;
-
-    doc.setFontSize(14);
-    doc.setTextColor(100, 116, 139); // Slate 500
-    doc.text("AI Resume & Job Skill Gap Analysis Report", 20, y);
-    y += 12;
-
-    doc.setDrawColor(226, 232, 240);
-    doc.line(20, y, pageWidth - 20, y);
-    y += 10;
-
-    // 1. Resume Score
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(14);
-    doc.setTextColor(21, 128, 61); // Green 700
-    doc.text(`Resume Score: ${result.score}/100`, 20, y);
-    y += 8;
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(11);
-    doc.setTextColor(51, 65, 85);
-    const feedbackLines = doc.splitTextToSize(`Feedback: ${result.feedback}`, pageWidth - 40);
-    doc.text(feedbackLines, 20, y);
-    y += feedbackLines.length * 6 + 4;
-
-    // 2. Extracted Skills
-    checkPageBreak(30);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(13);
-    doc.setTextColor(30, 41, 59);
-    doc.text(`Extracted Skills (${result.skills.length}):`, 20, y);
-    y += 7;
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(10);
-    doc.setTextColor(71, 85, 105);
-    const skillsText = result.skills.length > 0 ? result.skills.join(" • ") : "No technical skills detected.";
-    const skillLines = doc.splitTextToSize(skillsText, pageWidth - 40);
-    doc.text(skillLines, 20, y);
-    y += skillLines.length * 5 + 8;
-
-    // 3. Target Role & Skill Gap Analysis
-    checkPageBreak(50);
-    doc.setDrawColor(203, 213, 225);
-    doc.line(20, y, pageWidth - 20, y);
-    y += 10;
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(15);
-    doc.setTextColor(67, 56, 202); // Indigo 700
-    doc.text("Skill Gap Analysis", 20, y);
-    y += 8;
-
-    doc.setFontSize(12);
-    doc.setTextColor(30, 41, 59);
-    doc.text(`Target Job Role: ${currentGap.targetRole}`, 20, y);
-    y += 7;
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(12);
-    doc.setTextColor(currentGap.matchPercentage >= 50 ? 21 : 185, currentGap.matchPercentage >= 50 ? 128 : 28, currentGap.matchPercentage >= 50 ? 61 : 28);
-    doc.text(`Skill Match Percentage: ${currentGap.matchPercentage}% (${currentGap.matchedSkills.length} of ${currentGap.requiredSkills.length} required skills)`, 20, y);
-    y += 9;
-
-    // Matched Skills
-    checkPageBreak(25);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(11);
-    doc.setTextColor(21, 128, 61); // Green 700
-    doc.text("Matched Required Skills:", 20, y);
-    y += 6;
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(10);
-    doc.setTextColor(51, 65, 85);
-    if (currentGap.matchedSkills.length > 0) {
-      currentGap.matchedSkills.forEach((skill) => {
-        checkPageBreak(7);
-        doc.text(`  [✓] ${skill}`, 24, y);
-        y += 5.5;
-      });
-    } else {
-      doc.text("  None currently matched.", 24, y);
-      y += 6;
+    setReportStatus("Preparing your PDF report...");
+    try {
+      const { downloadAnalysisReport } = await import("./utils/report.js");
+      downloadAnalysisReport(result, currentGap);
+      setReportStatus("Your PDF report is ready to download.");
+    } catch {
+      setReportStatus("We couldn't create the PDF report. Please try again.");
     }
-    y += 3;
-
-    // Missing Skills
-    checkPageBreak(25);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(11);
-    doc.setTextColor(185, 28, 28); // Red 700
-    doc.text("Missing Skills for Role:", 20, y);
-    y += 6;
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(10);
-    doc.setTextColor(51, 65, 85);
-    if (currentGap.missingSkills.length > 0) {
-      currentGap.missingSkills.forEach((skill) => {
-        checkPageBreak(7);
-        doc.text(`  [✕] ${skill}`, 24, y);
-        y += 5.5;
-      });
-    } else {
-      doc.text("  All required skills matched! Ready to apply.", 24, y);
-      y += 6;
-    }
-    y += 6;
-
-    // 4. Learning Recommendations
-    checkPageBreak(40);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(12);
-    doc.setTextColor(180, 83, 9); // Amber 700
-    doc.text("Personalized Learning & Improvement Recommendations:", 20, y);
-    y += 7;
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(9.5);
-    doc.setTextColor(51, 65, 85);
-    currentGap.recommendations.forEach((rec) => {
-      checkPageBreak(12);
-      const recLines = doc.splitTextToSize(`• ${rec}`, pageWidth - 45);
-      doc.text(recLines, 24, y);
-      y += recLines.length * 5 + 2;
-    });
-    y += 6;
-
-    // 5. Recommended Jobs
-    checkPageBreak(30);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(12);
-    doc.setTextColor(126, 34, 206); // Purple 700
-    doc.text("Recommended Job Roles:", 20, y);
-    y += 7;
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(10);
-    doc.setTextColor(51, 65, 85);
-    result.recommended_jobs.forEach((job) => {
-      checkPageBreak(7);
-      doc.text(`• ${job}`, 25, y);
-      y += 6;
-    });
-
-    doc.save(`CareerPilot_${selectedRole.replace(/\s+/g, "_")}_Gap_Report.pdf`);
   };
-
-  const progressStyle = getProgressColors(currentGap.matchPercentage);
-  const roleList = Object.keys(JOB_ROLES);
 
   return (
-    <div className="min-h-screen bg-slate-100 flex justify-center items-center p-4 sm:p-10">
-      <div className="bg-white shadow-2xl rounded-2xl p-6 sm:p-8 w-full max-w-4xl">
-
-        <h1 className="text-3xl sm:text-4xl font-bold text-center text-blue-600">
-          🚀 CareerPilot AI
-        </h1>
-
-        <p className="text-center text-gray-500 mt-2 font-medium">
-          AI Resume Analyzer & Job Skill Gap Analysis System
-        </p>
-
-        {/* Upload Form */}
-        <div className="flex flex-col sm:flex-row gap-3 mt-8">
-          <input
-            type="file"
-            accept=".pdf"
-            className="border border-slate-300 rounded-lg p-2.5 w-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 text-slate-700"
-            onChange={handleFileChange}
-          />
-
-          <button
-            onClick={handleUpload}
-            disabled={loading}
-            className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-medium px-6 py-2.5 rounded-lg flex items-center justify-center transition cursor-pointer shadow-md"
-          >
-            <FaFileUpload className="mr-2" />
-            {loading ? "Analyzing Resume..." : "Upload & Analyze"}
-          </button>
+    <div className="app-shell" id="top">
+      <header className="site-header">
+        <div className="site-header-inner page-width">
+          <a className="brand" href="#top" aria-label="CareerPilot AI home">
+            <span className="brand-mark" aria-hidden="true"><FiActivity /></span>
+            <span className="brand-name">careerpilot<span>AI</span></span>
+          </a>
+          <nav className="header-nav" aria-label="Main navigation">
+            <a href="#how-it-works">How it works</a>
+            <a href="#privacy">Privacy</a>
+            <a className="header-cta" href="#analyzer">Analyze a resume <FiArrowRight aria-hidden="true" /></a>
+          </nav>
         </div>
+      </header>
 
-        {/* Error Alert */}
-        {error && (
-          <div className="mt-4 bg-red-50 border border-red-300 text-red-700 p-4 rounded-xl flex items-start gap-3 shadow-sm">
-            <FaTimesCircle className="text-red-500 text-lg mt-0.5 shrink-0" />
-            <div>
-              <p className="font-semibold">Notice</p>
-              <p className="text-sm mt-0.5">{error}</p>
+      <main className="page-width main-content">
+        <section className="hero-section" aria-labelledby="hero-title">
+          <div className="hero-copy">
+            <div className="eyebrow"><span className="eyebrow-dot" /> CAREER CLARITY, STARTING HERE</div>
+            <h1 id="hero-title">Make your next career move with <span>more clarity.</span></h1>
+            <p className="hero-description">
+              Understand the strengths in your resume, compare your skills with roles you care about, and leave with a practical next step.
+            </p>
+            <div className="hero-proof-row">
+              <span><FiCheckCircle aria-hidden="true" /> Clear skill gaps</span>
+              <span><FiShield aria-hidden="true" /> AI is optional</span>
             </div>
           </div>
+          <aside className="hero-roadmap" aria-label="How CareerPilot works">
+            <div className="roadmap-label"><FiStar aria-hidden="true" /> A simpler way to get started</div>
+            <div className="roadmap-step">
+              <span className="roadmap-number">01</span>
+              <div><strong>Upload your resume</strong><span>Start with a text-based PDF</span></div>
+              <FiFileText className="roadmap-icon" aria-hidden="true" />
+            </div>
+            <div className="roadmap-connector" />
+            <div className="roadmap-step">
+              <span className="roadmap-number">02</span>
+              <div><strong>See your skill signals</strong><span>Review what the parser found</span></div>
+              <FiLayers className="roadmap-icon" aria-hidden="true" />
+            </div>
+            <div className="roadmap-connector" />
+            <div className="roadmap-step">
+              <span className="roadmap-number">03</span>
+              <div><strong>Build a focused plan</strong><span>Choose a role and close the gaps</span></div>
+              <FiTarget className="roadmap-icon" aria-hidden="true" />
+            </div>
+          </aside>
+        </section>
+
+        <section className="analyzer-layout" id="analyzer" aria-label="Resume analyzer">
+          <div className="upload-card panel-card">
+            <div className="section-kicker"><span>01</span> RESUME ANALYSIS</div>
+            <div className="upload-title-row">
+              <div>
+                <h2>Start with your resume</h2>
+                <p>Upload a PDF and get a clear, role-focused overview.</p>
+              </div>
+              <div className="upload-title-icon" aria-hidden="true"><FiUploadCloud /></div>
+            </div>
+
+            <form onSubmit={handleUpload}>
+              <label
+                className={`dropzone${dragActive ? " is-drag-active" : ""}${file ? " has-file" : ""}`}
+                htmlFor="resume-file"
+                onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }}
+                onDragOver={(event) => { event.preventDefault(); setDragActive(true); }}
+                onDragLeave={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget)) setDragActive(false);
+                }}
+                onDrop={handleDrop}
+              >
+                <input
+                  ref={fileInputRef}
+                  className="dropzone-input"
+                  id="resume-file"
+                  name="resume"
+                  type="file"
+                  accept=".pdf,application/pdf"
+                  onChange={handleFileInput}
+                  aria-describedby="file-hint"
+                  disabled={loading}
+                />
+                <span className="dropzone-content">
+                  <span className="dropzone-icon"><FiUploadCloud aria-hidden="true" /></span>
+                  <span className="dropzone-title">Drag your PDF here</span>
+                  <span className="dropzone-subtitle">or <span className="browse-link">browse files</span></span>
+                  <span className="file-hint" id="file-hint">PDF only · up to 10 MB · text-based PDFs work best</span>
+                </span>
+              </label>
+
+              {file && (
+                <div className="selected-file" aria-live="polite">
+                  <span className="selected-file-icon"><FiFileText aria-hidden="true" /></span>
+                  <span className="selected-file-copy">
+                    <strong title={file.name}>{file.name}</strong>
+                    <span>{formatFileSize(file.size)} · Ready to analyze</span>
+                  </span>
+                  <button className="icon-button remove-file" type="button" onClick={clearFile} aria-label="Remove selected file" disabled={loading}>
+                    <FiTrash2 aria-hidden="true" />
+                  </button>
+                </div>
+              )}
+
+              <label className="ai-consent">
+                <input
+                  type="checkbox"
+                  checked={includeAi}
+                  onChange={(event) => setIncludeAi(event.target.checked)}
+                  disabled={loading}
+                />
+                <span className="custom-checkbox"><FiCheck aria-hidden="true" /></span>
+                <span className="ai-consent-copy">
+                  <strong>Include optional Gemini career insights</strong>
+                  <span>Your resume text will be sent to the configured Gemini service. Off by default.</span>
+                </span>
+                <FiInfo className="consent-info" aria-hidden="true" />
+              </label>
+
+              {error && (
+                <div className="alert-message" role="alert">
+                  <FiAlertCircle aria-hidden="true" />
+                  <span>{error}</span>
+                  <button type="button" className="alert-dismiss" onClick={() => setError("")} aria-label="Dismiss error"><FiX /></button>
+                </div>
+              )}
+
+              <button className="primary-button analyze-button" type="submit" disabled={!file || loading}>
+                {loading ? <><FiLoader className="spin" aria-hidden="true" /> Analyzing resume...</> : <><FiActivity aria-hidden="true" /> Analyze my resume <FiArrowRight aria-hidden="true" /></>}
+              </button>
+              <p className="form-footnote"><FiLock aria-hidden="true" /> Your PDF is processed for this analysis and is not kept by CareerPilot.</p>
+            </form>
+          </div>
+
+          <aside className="privacy-card panel-card" id="privacy">
+            <div className="privacy-icon"><FiShield aria-hidden="true" /></div>
+            <div className="section-kicker">YOUR DATA, YOUR CHOICE</div>
+            <h2>Private by default.<br /><span>Useful by design.</span></h2>
+            <p>Core skill extraction and role matching run without generative AI. Your uploaded file is processed temporarily and not saved as a resume record.</p>
+            <div className="privacy-divider" />
+            <div className="privacy-detail">
+              <span className="privacy-check"><FiCheck aria-hidden="true" /></span>
+              <div><strong>AI is opt-in</strong><span>Only enable Gemini insights if you are comfortable sending resume text to that service.</span></div>
+            </div>
+            <div className="privacy-detail">
+              <span className="privacy-check"><FiCheck aria-hidden="true" /></span>
+              <div><strong>No hiring promises</strong><span>Scores are directional content signals, not ATS results or hiring predictions.</span></div>
+            </div>
+          </aside>
+        </section>
+
+        {loading && (
+          <section className="loading-panel panel-card" role="status" aria-live="polite">
+            <span className="loading-spinner"><FiLoader aria-hidden="true" /></span>
+            <div>
+              <h2>Reviewing your resume</h2>
+              <p>Extracting readable text, identifying skills, and preparing your role comparison. This usually takes a few seconds.</p>
+            </div>
+            <span className="loading-pulse" aria-hidden="true" />
+          </section>
+        )}
+
+        {!loading && (
+          <section className="benefits-section" id="how-it-works" aria-labelledby="benefits-title">
+            <div className="benefits-heading">
+              <div className="section-kicker">A PRACTICAL FIRST STEP</div>
+              <h2 id="benefits-title">A resume review you can act on.</h2>
+              <p>Get grounded feedback without pretending a single number can tell your whole career story.</p>
+            </div>
+            <div className="benefit-grid">
+              <article className="benefit-card">
+                <span className="benefit-icon lavender"><FiLayers aria-hidden="true" /></span>
+                <h3>See the skills we found</h3>
+                <p>Review extracted skills and catch gaps in the parser's read before you use the results.</p>
+              </article>
+              <article className="benefit-card">
+                <span className="benefit-icon mint"><FiTarget aria-hidden="true" /></span>
+                <h3>Compare against a role</h3>
+                <p>Match your current skills to a clear list of competencies for ten supported career tracks.</p>
+              </article>
+              <article className="benefit-card">
+                <span className="benefit-icon peach"><FiSun aria-hidden="true" /></span>
+                <h3>Know what to work on</h3>
+                <p>Turn missing skills into specific learning prompts and export a report to keep handy.</p>
+              </article>
+            </div>
+          </section>
         )}
 
         {result && (
-          <>
-            {/* 1. Resume Score */}
-            <div className="mt-8 bg-green-50 border border-green-200 rounded-xl p-6 flex flex-col sm:flex-row justify-between items-center gap-4">
+          <section className="results-section" ref={resultsRef} aria-labelledby="results-title">
+            <div className="results-header">
               <div>
-                <h2 className="text-xl font-bold text-green-900">
-                  📊 Resume Score
-                </h2>
-                <p className="text-gray-600 mt-2 max-w-md">
-                  Your resume has been parsed and evaluated across core technical competencies.
-                </p>
-                <div className="mt-2 text-xs font-semibold text-green-800 bg-green-200/60 px-3 py-1 rounded-full inline-block">
-                  Detected {result.skills.length} Technical Skills
-                </div>
+                <div className="section-kicker"><span className="ready-dot" /> ANALYSIS COMPLETE</div>
+                <h2 id="results-title" ref={resultsHeadingRef} tabIndex={-1}>Your resume, at a glance</h2>
+                <p className="results-filename"><FiFileText aria-hidden="true" /> {result.filename} <span /> {result.word_count.toLocaleString()} words scanned</p>
               </div>
-
-              <div className="w-28 h-28 shrink-0">
-                <CircularProgressbar
-                  value={result.score}
-                  text={`${result.score}%`}
-                  styles={buildStyles({
-                    textColor: "#15803d",
-                    pathColor: "#16a34a",
-                    trailColor: "#d1fae5",
-                    textSize: "24px",
-                  })}
-                />
+              <div className="results-actions">
+                <button type="button" className="secondary-button" onClick={handleDownloadReport}><FiDownload aria-hidden="true" /> Download report</button>
+                <button type="button" className="text-button" onClick={handleReset}><FiRefreshCw aria-hidden="true" /> New analysis</button>
               </div>
             </div>
 
-            {/* 2. Extracted Skills */}
-            <div className="mt-6 bg-slate-50 border border-slate-200 rounded-xl p-5">
-              <h2 className="text-xl font-bold flex items-center text-slate-800">
-                <FaTools className="mr-2 text-blue-600" />
-                Extracted Resume Skills
-                <span className="ml-2 text-xs font-semibold bg-blue-100 text-blue-700 px-2.5 py-0.5 rounded-full">
-                  {result.skills.length} detected
-                </span>
-              </h2>
+            <div className="overview-grid">
+              <article className="score-card panel-card">
+                <div className="score-ring-wrap"><ScoreRing score={score} /></div>
+                <div className="score-detail">
+                  <div className="score-label"><FiAward aria-hidden="true" /> RESUME SIGNAL</div>
+                  <h3>{getScoreLabel(score)}</h3>
+                  <p>{result.feedback}</p>
+                  <div className="score-disclaimer"><FiInfo aria-hidden="true" /> A directional signal, not an ATS score or hiring prediction.</div>
+                </div>
+              </article>
 
-              {result.skills.length > 0 ? (
-                <div className="flex flex-wrap gap-2 mt-3">
-                  {result.skills.map((skill, index) => (
-                    <span
-                      key={index}
-                      className="bg-blue-50 text-blue-700 border border-blue-200 px-3.5 py-1.5 rounded-full font-medium text-sm shadow-xs"
-                    >
-                      {skill}
-                    </span>
+              <article className="stat-card panel-card">
+                <span className="stat-icon stat-blue"><FiLayers aria-hidden="true" /></span>
+                <div className="stat-value">{result.skills.length}</div>
+                <div className="stat-title">Skills detected</div>
+                <p>Unique skills identified in the readable text</p>
+              </article>
+              <article className="stat-card panel-card">
+                <span className="stat-icon stat-green"><FiCheckCircle aria-hidden="true" /></span>
+                <div className="stat-value">{result.sections.length}<span className="stat-denominator"> / 5</span></div>
+                <div className="stat-title">Core sections found</div>
+                <p>{result.sections.length ? `Found: ${result.sections.join(", ")}` : "No common section headings detected"}</p>
+              </article>
+            </div>
+
+            {SCORE_PARTS.some(([key]) => key in scoreBreakdown) && (
+              <details className="score-breakdown panel-card">
+                <summary><span><FiActivity aria-hidden="true" /> How this score is composed</span><FiChevronDown className="details-chevron" aria-hidden="true" /></summary>
+                <div className="score-parts-grid">
+                  {SCORE_PARTS.map(([key, label, max]) => (
+                    <div className="score-part" key={key}>
+                      <div className="score-part-label"><span>{label}</span><strong>{scoreBreakdown[key] ?? 0}<small> / {max}</small></strong></div>
+                      <div className="mini-track"><span style={{ width: `${Math.max(0, Math.min(100, ((Number(scoreBreakdown[key]) || 0) / max) * 100))}%` }} /></div>
+                    </div>
                   ))}
                 </div>
+                <p className="score-method-note">Each detected skill is worth 3.5 points (up to 10); five common sections are worth 5 points each. A 250-1,000 word resume receives full length credit, while contact details and measurable outcomes are detected as simple signals. Keyword detection can miss context.</p>
+              </details>
+            )}
+
+            <section className="result-card panel-card" aria-labelledby="skills-title">
+              <div className="section-heading-row">
+                <div className="section-icon blue-icon"><FiLayers aria-hidden="true" /></div>
+                <div><div className="section-kicker">WHAT WE PICKED UP</div><h2 id="skills-title">Skills detected</h2></div>
+                <span className="count-pill">{result.skills.length} {result.skills.length === 1 ? "skill" : "skills"}</span>
+              </div>
+              {result.skills.length ? (
+                <div className="skill-chip-list">
+                  {result.skills.map((skill) => <span className="skill-chip" key={skill}>{skill}</span>)}
+                </div>
               ) : (
-                <p className="text-sm text-gray-500 mt-2">
-                  No technical skills were detected in the resume text. You can still select a target role below to see required skills.
-                </p>
+                <div className="empty-notice"><FiInfo aria-hidden="true" /><p>No supported technical skills were detected. Check that the PDF contains selectable text, then choose a target role below to explore its requirements.</p></div>
               )}
-            </div>
+            </section>
 
-            {/* 3. Target Job Role Selector */}
-            <div className="mt-6 bg-blue-50 border border-blue-200 rounded-xl p-5">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <div>
-                  <h2 className="text-xl font-bold flex items-center text-blue-900">
-                    <FaBullseye className="mr-2 text-blue-600" />
-                    Target Job Role
-                  </h2>
-                  <p className="text-sm text-blue-700 mt-1">
-                    Select a target job role to run instant skill gap analysis against required industry competencies:
-                  </p>
-                </div>
-
-                <div className="w-full sm:w-64">
-                  <select
-                    value={selectedRole}
-                    onChange={(e) => handleSelectRole(e.target.value)}
-                    className="w-full bg-white border border-blue-300 text-blue-900 font-semibold rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-xs cursor-pointer"
-                  >
-                    {roleList.map((role) => (
-                      <option key={role} value={role}>
-                        {role}
-                      </option>
-                    ))}
+            <section className="result-card panel-card skill-gap-card" ref={skillGapRef} aria-labelledby="gap-title">
+              <div className="section-heading-row gap-heading-row">
+                <div className="section-icon purple-icon"><FiTarget aria-hidden="true" /></div>
+                <div className="gap-title-copy"><div className="section-kicker">YOUR NEXT STEP</div><h2 id="gap-title">Compare your skills to a role</h2></div>
+                <label className="role-select-wrap" htmlFor="target-role">
+                  <span>Target role</span>
+                  <select id="target-role" value={selectedRole} onChange={(event) => handleSelectRole(event.target.value)}>
+                    {roleList.map((role) => <option value={role} key={role}>{role}</option>)}
                   </select>
-                </div>
+                  <FiChevronDown className="select-chevron" aria-hidden="true" />
+                </label>
               </div>
 
-              {/* Quick-Select Role Chips */}
-              <div className="flex flex-wrap gap-1.5 mt-3 pt-3 border-t border-blue-200/60">
-                {roleList.map((role) => {
-                  const isSelected = selectedRole === role;
-                  return (
-                    <button
-                      key={role}
-                      onClick={() => handleSelectRole(role)}
-                      className={`text-xs px-3 py-1.5 rounded-lg font-medium transition cursor-pointer ${
-                        isSelected
-                          ? "bg-blue-600 text-white shadow-sm ring-2 ring-blue-400"
-                          : "bg-white text-slate-700 hover:bg-blue-100/70 border border-blue-200"
-                      }`}
-                    >
-                      {role}
-                    </button>
-                  );
-                })}
+              <div className="target-role-summary">
+                <div><h3>{currentGap.targetRole}</h3><p>{JOB_ROLES[currentGap.targetRole]?.description}</p></div>
+                <div className="match-badge"><strong>{currentGap.matchPercentage}%</strong><span>skills matched</span></div>
               </div>
-            </div>
-
-            {/* 4. Skill Gap Analysis Section */}
-            <div
-              ref={skillGapSectionRef}
-              className="mt-6 bg-indigo-50/70 border-2 border-indigo-200 rounded-xl p-6 shadow-sm"
-            >
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-indigo-200">
-                <div>
-                  <div className="inline-flex items-center gap-1.5 text-xs font-bold text-indigo-700 bg-indigo-100 px-3 py-1 rounded-full uppercase tracking-wider">
-                    <FaChartLine /> Skill Gap Analysis
-                  </div>
-
-                  <h2 className="text-2xl font-bold text-slate-900 mt-2">
-                    Target Role: <span className="text-indigo-600">{currentGap.targetRole}</span>
-                  </h2>
-
-                  <p className="text-sm text-slate-600 mt-1">
-                    {JOB_ROLES[selectedRole]?.description || "Job role competency evaluation."}
-                  </p>
-                </div>
-
-                {/* Skill Match Visual Progress Indicator */}
-                <div className="flex items-center gap-4 bg-white p-3.5 rounded-xl border border-indigo-100 shadow-xs shrink-0">
-                  <div className="w-18 h-18">
-                    <CircularProgressbar
-                      value={currentGap.matchPercentage}
-                      text={`${currentGap.matchPercentage}%`}
-                      styles={buildStyles({
-                        textColor: progressStyle.textColor,
-                        pathColor: progressStyle.pathColor,
-                        trailColor: progressStyle.trailColor,
-                        textSize: "26px",
-                      })}
-                    />
-                  </div>
-
-                  <div>
-                    <div className="text-xs font-semibold text-slate-500 uppercase">
-                      Skill Match
-                    </div>
-                    <div className="text-2xl font-bold text-slate-900">
-                      {currentGap.matchPercentage}%
-                    </div>
-                    <div className="text-xs text-slate-500 mt-0.5 font-medium">
-                      {currentGap.matchedSkills.length} / {currentGap.requiredSkills.length} Skills Matched
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Clean Horizontal Progress Bar */}
-              <div className="mt-4">
-                <div className="w-full bg-slate-200 rounded-full h-3 overflow-hidden">
-                  <div
-                    className="h-3 rounded-full transition-all duration-500 ease-out"
-                    style={{
-                      width: `${currentGap.matchPercentage}%`,
-                      backgroundColor: progressStyle.pathColor,
-                    }}
-                  />
-                </div>
-                <div className="flex justify-between text-xs text-slate-500 mt-1 font-medium">
-                  <span>Mathematical Score: ({currentGap.matchedSkills.length} matched / {currentGap.requiredSkills.length} required) × 100</span>
-                  <span>{currentGap.matchPercentage}% Match</span>
-                </div>
-              </div>
-
-              {/* Matched vs Missing Skills Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
-                {/* Matched Skills */}
-                <div className="bg-emerald-50/80 border border-emerald-200 rounded-xl p-4">
-                  <h3 className="font-bold text-emerald-900 flex items-center text-base">
-                    <FaCheckCircle className="text-emerald-600 mr-2" />
-                    Matched Skills ({currentGap.matchedSkills.length})
-                  </h3>
-
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {currentGap.matchedSkills.length > 0 ? (
-                      currentGap.matchedSkills.map((skill, idx) => (
-                        <span
-                          key={idx}
-                          className="bg-emerald-100 text-emerald-800 border border-emerald-300 text-sm font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5 shadow-xs"
-                        >
-                          <span className="text-emerald-600 font-bold">✓</span> {skill}
-                        </span>
-                      ))
-                    ) : (
-                      <p className="text-sm text-emerald-800 italic">
-                        No required skills currently matched. Review the recommendations below to bridge this gap.
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                {/* Missing Skills */}
-                <div className="bg-rose-50/80 border border-rose-200 rounded-xl p-4">
-                  <h3 className="font-bold text-rose-900 flex items-center text-base">
-                    <FaTimesCircle className="text-rose-600 mr-2" />
-                    Missing Skills ({currentGap.missingSkills.length})
-                  </h3>
-
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {currentGap.missingSkills.length > 0 ? (
-                      currentGap.missingSkills.map((skill, idx) => (
-                        <span
-                          key={idx}
-                          className="bg-rose-100 text-rose-800 border border-rose-300 text-sm font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5 shadow-xs"
-                        >
-                          <span className="text-rose-600 font-bold">✕</span> {skill}
-                        </span>
-                      ))
-                    ) : (
-                      <p className="text-sm text-emerald-800 font-medium">
-                        ✓ All required skills matched for this role!
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* 5. Recommended Learning / Improvement Areas */}
-            <div className="mt-6 bg-amber-50 border border-amber-200 rounded-xl p-5">
-              <h2 className="text-xl font-bold flex items-center text-amber-900">
-                <FaLightbulb className="mr-2 text-amber-600" />
-                Recommended Learning / Improvement Areas
-              </h2>
-              <p className="text-sm text-amber-800 mt-1">
-                Targeted recommendations to close skill gaps for <span className="font-semibold">{selectedRole}</span>:
-              </p>
-
-              <div className="mt-4 space-y-2.5">
-                {currentGap.recommendations.map((rec, index) => (
-                  <div
-                    key={index}
-                    className="bg-white border border-amber-200/80 rounded-lg p-3 text-sm text-slate-800 flex items-start gap-3 shadow-xs"
-                  >
-                    <span className="bg-amber-100 text-amber-800 font-bold text-xs rounded-full w-5 h-5 flex items-center justify-center shrink-0 mt-0.5">
-                      {index + 1}
-                    </span>
-                    <span className="leading-relaxed">{rec}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* 6. Feedback */}
-            <div className="mt-6 bg-yellow-50 border border-yellow-200 rounded-xl p-5">
-              <h2 className="text-xl font-bold flex items-center text-yellow-900">
-                <FaCommentDots className="mr-2 text-yellow-600" />
-                Resume Feedback
-              </h2>
-              <p className="mt-2 text-slate-700 leading-relaxed font-medium">
-                {result.feedback}
-              </p>
-            </div>
-
-            {/* 7. Recommended Jobs with "Analyze Skill Gap" Action */}
-            <div className="mt-6 bg-purple-50 border border-purple-200 rounded-xl p-5">
-              <h2 className="text-xl font-bold flex items-center text-purple-900">
-                <FaBriefcase className="mr-2 text-purple-600" />
-                Recommended Jobs
-              </h2>
-              <p className="text-sm text-purple-700 mt-1">
-                Roles matching your resume profile. Click <span className="font-semibold">Analyze Skill Gap</span> to run instant gap analysis:
-              </p>
-
-              <div className="mt-4 space-y-2">
-                {result.recommended_jobs.map((job, index) => {
-                  const isCurrentRole = selectedRole === job;
-                  return (
-                    <div
-                      key={index}
-                      className="bg-white border border-purple-200 rounded-xl p-3.5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 shadow-xs hover:border-purple-300 transition"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="text-purple-600 font-bold">•</span>
-                        <span className="font-semibold text-slate-800 text-base">{job}</span>
-                        {isCurrentRole && (
-                          <span className="text-xs font-semibold bg-indigo-100 text-indigo-700 px-2.5 py-0.5 rounded-full">
-                            Active Target Role
-                          </span>
-                        )}
-                      </div>
-
-                      <button
-                        onClick={() => handleSelectRole(job)}
-                        className={`text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition cursor-pointer shadow-xs ${
-                          isCurrentRole
-                            ? "bg-indigo-600 text-white"
-                            : "bg-purple-600 hover:bg-purple-700 text-white"
-                        }`}
-                      >
-                        Analyze Skill Gap <FaArrowRight className="text-2xs" />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* 8. AI Analysis */}
-            <div className="mt-6 bg-cyan-50 border border-cyan-200 rounded-xl p-5">
-              <h2 className="text-xl font-bold text-cyan-900 flex items-center">
-                <FaRobot className="mr-2 text-cyan-600" />
-                AI Career Insights
-              </h2>
-
-              <div className="mt-3 text-slate-700 text-sm whitespace-pre-line leading-relaxed bg-white/70 p-4 rounded-lg border border-cyan-100">
-                {result.ai_analysis || "AI Analysis unavailable. Deterministic skill gap analysis is active."}
-              </div>
-            </div>
-
-            {/* 9. Download Report Button */}
-            <div className="mt-8 text-center">
-              <button
-                onClick={downloadReport}
-                className="bg-green-600 hover:bg-green-700 text-white px-8 py-3.5 rounded-xl font-semibold shadow-lg hover:shadow-xl transition cursor-pointer flex items-center justify-center mx-auto text-base gap-2"
+              <div
+                className="match-progress"
+                role="progressbar"
+                aria-label={`${currentGap.matchPercentage}% of required ${currentGap.targetRole} skills matched`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={currentGap.matchPercentage}
               >
-                📄 Download Complete Analysis Report (PDF)
-              </button>
-              <p className="text-xs text-slate-500 mt-2">
-                Includes Resume Score, Extracted Skills, Skill Gap Analysis for {selectedRole}, and Learning Roadmap.
-              </p>
+                <span style={{ width: `${currentGap.matchPercentage}%` }} />
+              </div>
+              <div className="match-caption"><span>{currentGap.matchedSkills.length} of {currentGap.requiredSkills.length} required skills present</span><span>Updated instantly when you change roles</span></div>
+
+              <div className="gap-columns">
+                <div className="gap-column matched-column">
+                  <div className="gap-column-title"><FiCheckCircle aria-hidden="true" /><h3>Already on your resume</h3><span>{currentGap.matchedSkills.length}</span></div>
+                  {currentGap.matchedSkills.length ? (
+                    <ul className="gap-skill-list">
+                      {currentGap.matchedSkills.map((skill) => <li key={skill}><FiCheck aria-hidden="true" />{skill}</li>)}
+                    </ul>
+                  ) : <p className="gap-empty">No direct matches yet. Review the required skills and start with one manageable learning goal.</p>}
+                </div>
+                <div className="gap-column missing-column">
+                  <div className="gap-column-title"><FiTarget aria-hidden="true" /><h3>Skills to strengthen</h3><span>{currentGap.missingSkills.length}</span></div>
+                  {currentGap.missingSkills.length ? (
+                    <ul className="gap-skill-list">
+                      {currentGap.missingSkills.map((skill) => <li key={skill}><span className="missing-dot" />{skill}</li>)}
+                    </ul>
+                  ) : <p className="gap-empty">Every listed requirement is represented in the skills we found. Keep building evidence through projects and experience.</p>}
+                </div>
+              </div>
+
+              <div className="recommendations-block">
+                <div className="recommendation-heading"><span className="recommendation-icon"><FiSun aria-hidden="true" /></span><div><h3>Your learning focus</h3><p>{currentGap.missingSkills.length ? `Suggestions based on the ${currentGap.missingSkills.length} skill gaps for ${currentGap.targetRole}.` : `You have a strong listed-skill match for ${currentGap.targetRole}. Keep deepening your evidence.`}</p></div></div>
+                <ol className="recommendation-list">
+                  {currentGap.recommendations.map((recommendation, index) => (
+                    <li key={`${currentGap.targetRole}-${index}`}><span className="recommendation-number">{String(index + 1).padStart(2, "0")}</span><span>{recommendation}</span></li>
+                  ))}
+                </ol>
+              </div>
+            </section>
+
+            <section className="result-card roles-card panel-card" aria-labelledby="roles-title">
+              <div className="section-heading-row">
+                <div className="section-icon green-icon"><FiBriefcase aria-hidden="true" /></div>
+                <div><div className="section-kicker">OTHER PATHS TO EXPLORE</div><h2 id="roles-title">Suggested roles</h2></div>
+              </div>
+              <p className="roles-intro">{hasSuggestedRoleOverlap ? "Suggestions are ordered by overlap with skills found in this PDF. Compare the percentage, then choose the role that fits your goals." : "No direct role overlap was detected, so these are starter roles rather than personalized matches. Choose one to explore its required skills."}</p>
+              {result.recommended_jobs.length ? (
+                <div className="role-suggestion-grid">
+                  {result.recommended_jobs.map((role) => {
+                    const gap = calculateSkillGap(result.skills, role);
+                    const active = role === selectedRole;
+                    return (
+                      <button
+                        type="button"
+                        className={`role-suggestion${active ? " is-selected" : ""}`}
+                        key={role}
+                        onClick={() => handleSelectRole(role, true)}
+                        aria-pressed={active}
+                      >
+                        <span className="role-suggestion-top"><span className="role-suggestion-icon"><FiBriefcase aria-hidden="true" /></span><span className="role-match-number">{gap.matchPercentage}%<small>match</small></span></span>
+                        <strong>{role}</strong>
+                        <span className="role-suggestion-description">{JOB_ROLES[role].description}</span>
+                        <span className="role-suggestion-action">{active ? "Current target" : "Compare this role"}<FiArrowRight aria-hidden="true" /></span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="empty-notice"><FiInfo aria-hidden="true" /><p>No role suggestions are available yet. You can still choose any supported target role above.</p></div>
+              )}
+            </section>
+
+            <div className="insight-grid">
+              <section className="insight-card panel-card" aria-labelledby="feedback-title">
+                <div className="section-heading-row">
+                  <div className="section-icon peach-icon"><FiAward aria-hidden="true" /></div>
+                  <div><div className="section-kicker">A QUICK READ</div><h2 id="feedback-title">Resume feedback</h2></div>
+                </div>
+                <p>{result.feedback}</p>
+                <div className="insight-note"><FiInfo aria-hidden="true" /> Score signals use skills, sections, length, contact details, and measurable outcomes.</div>
+              </section>
+
+              <section className="insight-card ai-card panel-card" aria-labelledby="ai-title">
+                <div className="section-heading-row">
+                  <div className="section-icon purple-icon"><FiStar aria-hidden="true" /></div>
+                  <div><div className="section-kicker">{result.ai_enabled ? "OPTIONAL GEMINI ANALYSIS" : "DETERMINISTIC ANALYSIS"}</div><h2 id="ai-title">Career insights</h2></div>
+                </div>
+                <p className="ai-result-text">{result.ai_analysis}</p>
+                {!result.ai_enabled && <div className="insight-note"><FiLock aria-hidden="true" /> Gemini was not used for this analysis. You can opt in before your next upload.</div>}
+              </section>
             </div>
-          </>
+
+            <div className="results-footer-actions">
+              <div className="report-status" aria-live="polite">{reportStatus}</div>
+              <button type="button" className="primary-button" onClick={handleDownloadReport}><FiDownload aria-hidden="true" /> Download your PDF report</button>
+              <p>Includes your score breakdown, detected skills, role match, and learning focus.</p>
+            </div>
+          </section>
         )}
 
-      </div>
+        <footer className="site-footer">
+          <a className="brand brand-small" href="#top"><span className="brand-mark" aria-hidden="true"><FiActivity /></span><span className="brand-name">careerpilot<span>AI</span></span></a>
+          <p>Designed to support your next step - not make the decision for you.</p>
+          <a href="#how-it-works">How the analysis works <FiArrowRight aria-hidden="true" /></a>
+        </footer>
+      </main>
     </div>
   );
 }

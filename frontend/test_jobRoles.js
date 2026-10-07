@@ -1,61 +1,50 @@
-import { JOB_ROLES, normalizeSkills, calculateSkillGap } from './src/data/jobRoles.js';
-import assert from 'node:assert';
+import assert from "node:assert/strict";
+import { JOB_ROLES, calculateSkillGap, normalizeSkills } from "./src/data/jobRoles.js";
 
-console.log('--- Testing Frontend jobRoles.js ---');
+console.log("--- CareerPilot role and skill tests ---");
 
-// 1. Roles count check
 const roles = Object.keys(JOB_ROLES);
-console.log(`  Found ${roles.length} roles:`, roles);
-assert(roles.length >= 10, 'Expected at least 10 roles');
-assert(roles.includes('Data Analyst'), 'Missing Data Analyst');
-assert(roles.includes('AI/ML Engineer'), 'Missing AI/ML Engineer');
-assert(roles.includes('Software Engineer'), 'Missing Software Engineer');
-assert(roles.includes('Web Developer'), 'Missing Web Developer');
-assert(roles.includes('Java Developer'), 'Missing Java Developer');
-assert(roles.includes('Python Developer'), 'Missing Python Developer');
-assert(roles.includes('Data Scientist'), 'Missing Data Scientist');
-assert(roles.includes('Frontend Developer'), 'Missing Frontend Developer');
-assert(roles.includes('Backend Developer'), 'Missing Backend Developer');
-assert(roles.includes('Full Stack Developer'), 'Missing Full Stack Developer');
-console.log('  [OK] All 10 required roles present');
+assert.equal(roles.length, 10, "Expected ten supported roles");
+assert.ok(roles.includes("Data Analyst"));
+assert.ok(roles.includes("AI/ML Engineer"));
+assert.ok(roles.includes("Full Stack Developer"));
 
-// 2. Normalization check
-const rawSkills = ['ml', 'ML', 'js', 'JS', 'ReactJS', 'react.js', 'stats', 'PowerBI', 'py', 'dsa'];
-const normalized = normalizeSkills(rawSkills);
-console.log('  Raw:', rawSkills);
-console.log('  Normalized:', normalized);
-assert(normalized.includes('Machine Learning'));
-assert(normalized.includes('JavaScript'));
-assert(normalized.includes('React'));
-assert(normalized.includes('Statistics'));
-assert(normalized.includes('Power BI'));
-assert(normalized.includes('Python'));
-assert(normalized.includes('Data Structures'));
-assert(normalized.includes('Algorithms'));
-console.log('  [OK] Skill normalization handles aliases and composite terms');
+const aliases = normalizeSkills([
+  "ml", "ML", "js", "JS", "ReactJS", "react.js", "stats", "PowerBI", "py", "dsa", "C++", null,
+]);
+assert.ok(aliases.includes("Machine Learning"));
+assert.ok(aliases.includes("JavaScript"));
+assert.ok(aliases.includes("React"));
+assert.ok(aliases.includes("Statistics"));
+assert.ok(aliases.includes("Power BI"));
+assert.ok(aliases.includes("Python"));
+assert.ok(aliases.includes("Data Structures"));
+assert.ok(aliases.includes("Algorithms"));
+assert.ok(aliases.includes("Programming"));
+assert.equal(normalizeSkills("python").includes("Python"), true);
+assert.deepEqual(normalizeSkills(null), []);
+assert.ok(normalizeSkills("py").includes("Programming"));
+assert.ok(normalizeSkills("TypeScript").includes("Programming"));
+assert.ok(normalizeSkills("DSA").includes("Algorithms"));
+assert.equal(normalizeSkills(["SQL", "PostgreSQL", "SQL"]).filter((skill) => skill === "SQL").length, 1);
 
-// 3. Mathematical calculation check: Data Analyst with Python, SQL, Data Analytics
-const gapResult = calculateSkillGap(['Python', 'SQL', 'Data Analytics'], 'Data Analyst');
-console.log('  Data Analyst test result:', gapResult);
-assert.deepStrictEqual(gapResult.matchedSkills, ['Python', 'SQL', 'Data Analytics']);
-assert.deepStrictEqual(gapResult.missingSkills, ['Excel', 'Power BI', 'Statistics']);
-assert.strictEqual(gapResult.matchPercentage, 50);
-assert.strictEqual(gapResult.recommendations.length, 3);
-console.log('  [OK] Mathematical match percentage is exactly 50% ((3 / 6) * 100)');
-console.log('  [OK] Recommendations match missing skills:');
-gapResult.recommendations.forEach(r => console.log('    •', r));
+const gap = calculateSkillGap(["Python", "SQL", "Data Analytics"], "Data Analyst");
+assert.deepEqual(gap.matchedSkills, ["Python", "SQL", "Data Analytics"]);
+assert.deepEqual(gap.missingSkills, ["Excel", "Power BI", "Statistics"]);
+assert.equal(gap.matchPercentage, 50);
+assert.equal(gap.recommendations.length, 3);
 
-// 4. Test 100% match case
-const perfectSkills = JOB_ROLES['Data Analyst'].skills;
-const perfectGap = calculateSkillGap(perfectSkills, 'Data Analyst');
-assert.strictEqual(perfectGap.matchPercentage, 100);
-assert.strictEqual(perfectGap.missingSkills.length, 0);
-console.log('  [OK] 100% match test passed');
+const perfectGap = calculateSkillGap(JOB_ROLES["Data Analyst"].skills, "Data Analyst");
+assert.equal(perfectGap.matchPercentage, 100);
+assert.deepEqual(perfectGap.missingSkills, []);
+assert.equal(perfectGap.recommendations.length, 1);
 
-// 5. Test 0% match case
-const zeroGap = calculateSkillGap(['C++', 'Rust', 'Ruby'], 'Data Analyst');
-assert.strictEqual(zeroGap.matchPercentage, 0);
-assert.strictEqual(zeroGap.missingSkills.length, 6);
-console.log('  [OK] 0% match test passed');
+const zeroGap = calculateSkillGap(["C++", "Rust", "Ruby"], "Data Analyst");
+assert.equal(zeroGap.matchPercentage, 0);
+assert.equal(zeroGap.missingSkills.length, 6);
 
-console.log('\nAll Frontend jobRoles.js Tests PASSED Successfully! 🎉');
+const fallbackGap = calculateSkillGap(["Python"], "Unsupported role");
+assert.equal(fallbackGap.targetRole, "Data Analyst");
+assert.equal(fallbackGap.requiredSkills.length, 6);
+
+console.log("All frontend role and skill tests passed.");

@@ -1,50 +1,34 @@
+"""Rank the supported career tracks by required-skill overlap."""
+
+from services.role_skills import JOB_ROLE_REQUIREMENTS, normalize_skill_list
+
+FALLBACK_ROLES = ["Software Engineer", "Web Developer", "Data Analyst"]
+
+
 def recommend_jobs(skills: list) -> list:
-    """Recommend roles based on extracted resume skills, matching supported target roles."""
-    jobs = []
-    skills_set = set(skills)
+    """Return up to five supported roles, best skill overlap first.
 
-    # Data Analyst
-    if "Python" in skills_set and ("SQL" in skills_set or "Data Analytics" in skills_set or "Excel" in skills_set or "Power BI" in skills_set):
-        jobs.append("Data Analyst")
+    When no role-specific skills are detected, return a few starter tracks so
+    the UI can still let a user explore the skill-gap tool. Those suggestions
+    should be presented as starting points, not as strong matches.
+    """
+    normalized_skills = set(normalize_skill_list(skills))
+    if not normalized_skills:
+        return FALLBACK_ROLES.copy()
 
-    # AI/ML Engineer & Data Scientist
-    if "Machine Learning" in skills_set or "Deep Learning" in skills_set:
-        jobs.append("AI/ML Engineer")
-        if "Statistics" in skills_set or "Data Analytics" in skills_set:
-            jobs.append("Data Scientist")
+    ranked_roles = []
+    for order, (role, required_skills) in enumerate(JOB_ROLE_REQUIREMENTS.items()):
+        matched_count = sum(skill in normalized_skills for skill in required_skills)
+        if not matched_count:
+            continue
 
-    # Frontend Developer & Web Developer
-    if "React" in skills_set or "JavaScript" in skills_set or ("HTML" in skills_set and "CSS" in skills_set):
-        jobs.append("Frontend Developer")
-        jobs.append("Web Developer")
+        percentage = (
+            (matched_count / len(required_skills)) * 100 if required_skills else 0
+        )
+        ranked_roles.append((-percentage, -matched_count, order, role))
 
-    # Backend Developer
-    if ("Node.js" in skills_set or "FastAPI" in skills_set or "Django" in skills_set) and ("SQL" in skills_set or "Database" in skills_set or "REST API" in skills_set):
-        jobs.append("Backend Developer")
+    ranked_roles.sort()
+    if not ranked_roles:
+        return FALLBACK_ROLES.copy()
 
-    # Full Stack Developer
-    if ("React" in skills_set or "Frontend Developer" in jobs) and ("Node.js" in skills_set or "Backend Developer" in jobs):
-        jobs.append("Full Stack Developer")
-
-    # Java Developer
-    if "Java" in skills_set or "Spring Boot" in skills_set:
-        jobs.append("Java Developer")
-
-    # Python Developer
-    if "Python" in skills_set and "Python Developer" not in jobs:
-        jobs.append("Python Developer")
-
-    # Software Engineer
-    if "Programming" in skills_set or "Data Structures" in skills_set or "Algorithms" in skills_set or "Git" in skills_set or "OOP" in skills_set:
-        jobs.append("Software Engineer")
-
-    # Deduplicate while preserving order
-    deduped = []
-    for j in jobs:
-        if j not in deduped:
-            deduped.append(j)
-
-    if not deduped:
-        deduped = ["Software Engineer", "Web Developer", "Data Analyst"]
-
-    return deduped[:5]
+    return [entry[3] for entry in ranked_roles[:5]]

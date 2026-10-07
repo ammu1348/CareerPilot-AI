@@ -1,76 +1,153 @@
-import sys
-import io
+"""API contract and upload-safety tests."""
 
-if sys.platform == "win32":
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-
-from fastapi.testclient import TestClient
+import routes.resume as resume_routes
 from app import app
+from fastapi.testclient import TestClient
+from testing_utils import build_text_pdf
 
 client = TestClient(app)
 
-def test_endpoints():
-    print("--- Testing API Endpoints ---")
 
-    # 1. Test /roles
-    resp_roles = client.get("/roles")
-    assert resp_roles.status_code == 200
-    roles_data = resp_roles.json()
-    assert "roles" in roles_data
-    assert len(roles_data["roles"]) >= 10
-    print(f"  [OK] GET /roles returned {len(roles_data['roles'])} roles")
-
-    # 2. Test /skill-gap
-    resp_gap = client.post(
-        "/skill-gap",
-        json={"skills": ["Python", "SQL", "Data Analytics"], "target_role": "Data Analyst"}
-    )
-    assert resp_gap.status_code == 200
-    gap_data = resp_gap.json()
-    assert gap_data["target_role"] == "Data Analyst"
-    assert gap_data["match_percentage"] == 50
-    assert gap_data["matched_skills"] == ["Python", "SQL", "Data Analytics"]
-    assert gap_data["missing_skills"] == ["Excel", "Power BI", "Statistics"]
-    print("  [OK] POST /skill-gap returned exactly 50% match for Data Analyst test case")
-
-    # 3. Test /upload with valid PDF
-    with open("uploads/CV_pdf.pdf", "rb") as f:
-        resp_upload = client.post("/upload", files={"file": ("CV_pdf.pdf", f, "application/pdf")})
-    assert resp_upload.status_code == 200
-    upload_data = resp_upload.json()
-    assert upload_data["status"] == "success"
-    assert upload_data["score"] > 0
-    assert len(upload_data["skills"]) > 0
-    assert "skill_gap" in upload_data
-    assert "ai_analysis" in upload_data
-    assert "recommended_jobs" in upload_data
-    print(f"  [OK] POST /upload with real PDF succeeded (score: {upload_data['score']}, skills count: {len(upload_data['skills'])})")
-    print(f"       Initial gap role: {upload_data['skill_gap']['target_role']}, match: {upload_data['skill_gap']['match_percentage']}%")
-
-    # 4. Test /upload with empty/unreadable PDF
-    with open("uploads/ANKIT.pdf", "rb") as f:
-        resp_empty = client.post("/upload", files={"file": ("ANKIT.pdf", f, "application/pdf")})
-    assert resp_empty.status_code == 200
-    empty_data = resp_empty.json()
-    assert empty_data["status"] == "error"
-    assert "scanned" in empty_data["message"].lower() or "unable" in empty_data["message"].lower() or "empty" in empty_data["message"].lower()
-    print("  [OK] POST /upload with empty PDF returned clean user-friendly error")
-
-    # 5. Test /upload with non-PDF
-    resp_invalid = client.post(
+def test_health_and_arena_preview_cors():
+    assert client.get("/health").json() == {"status": "ok"}
+    response = client.options(
         "/upload",
-        files={"file": ("test.txt", b"Hello world text", "text/plain")}
+        headers={
+            "Origin": "https://5173-preview-sandbox.e2b.app",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
     )
-    assert resp_invalid.status_code == 200
-    invalid_data = resp_invalid.json()
-    assert invalid_data["status"] == "error"
-    assert "pdf" in invalid_data["message"].lower()
-    print("  [OK] POST /upload with non-PDF returned unsupported format message")
+    assert response.status_code == 200
+    assert (
+        response.headers["access-control-allow-origin"]
+        == "https://5173-preview-sandbox.e2b.app"
+    )
 
-if __name__ == "__main__":
-    try:
-        test_endpoints()
-        print("\nAll API Endpoint Tests PASSED Successfully! 🎉")
-    except Exception as e:
-        print(f"\nTEST FAILED: {e}")
-        sys.exit(1)
+
+def test_roles_endpoint_returns_supported_requirements():
+    response = client.get("/roles")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["roles"]) >= 10
+    assert "Data Analyst" in body["roles"]
+    assert body["requirements"]["Data Analyst"] == [
+        "Python",
+        "SQL",
+        "Excel",
+        "Power BI",
+        "Statistics",
+        "Data Analytics",
+    ]
+
+
+def test_skill_gap_endpoint_is_deterministic():
+    response = client.post(
+        "/skill-gap",
+        json={
+            "skills": ["Python", "SQL", "Data Analytics"],
+            "target_role": "Data Analyst",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["match_percentage"] == 50
+    assert body["matched_skills"] == ["Python", "SQL", "Data Analytics"]
+    assert body["missing_skills"] == ["Excel", "Power BI", "Statistics"]
+
+
+def test_valid_upload_returns_summary_without_resume_text():
+    resume = (
+        "Alex Doe alex@example.com\nSummary\nData analyst with Python and SQL.\n"
+        "Skills\nPython, SQL, Excel, Power BI, statistics, data analytics\n"
+        "Experience\nIncreased reporting speed by 30%.\nEducation\nProjects\n"
+    )
+    response = client.post(
+        "/upload",
+        files={
+            "file": (
+                "../../private_resume.pdf",
+                build_text_pdf(resume),
+                "application/pdf",
+            )
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "success"
+    assert body["filename"] == "private_resume.pdf"
+    assert body["score"] > 0
+    assert "Python" in body["skills"]
+    assert body["skill_gap"]["target_role"] in body["available_roles"]
+    assert body["ai_enabled"] is False
+    assert "text" not in body
+    assert "alex@example.com" not in response.text
+    assert "not requested" in body["ai_analysis"].lower()
+
+
+def test_invalid_extension_and_invalid_pdf_are_handled_cleanly():
+    wrong_extension = client.post(
+        "/upload",
+        files={"file": ("resume.docx", b"not a pdf", "application/octet-stream")},
+    )
+    assert wrong_extension.status_code == 200
+    assert wrong_extension.json()["status"] == "error"
+    assert "pdf" in wrong_extension.json()["message"].lower()
+
+    fake_pdf = client.post(
+        "/upload",
+        files={
+            "file": (
+                "resume.pdf",
+                b"plain text pretending to be a pdf",
+                "application/pdf",
+            )
+        },
+    )
+    assert fake_pdf.status_code == 200
+    assert fake_pdf.json()["status"] == "error"
+    assert "valid pdf" in fake_pdf.json()["message"].lower()
+
+
+def test_scanned_or_empty_pdf_returns_actionable_message():
+    response = client.post(
+        "/upload",
+        files={"file": ("scan.pdf", build_text_pdf("   "), "application/pdf")},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "error"
+    assert "text-based pdf" in response.json()["message"].lower()
+
+
+def test_upload_limit_is_enforced(monkeypatch):
+    monkeypatch.setattr(resume_routes, "MAX_UPLOAD_BYTES", 32)
+    response = client.post(
+        "/upload",
+        files={"file": ("large.pdf", b"%PDF-" + b"x" * 40, "application/pdf")},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "error"
+    assert "10 mb" in response.json()["message"].lower()
+
+
+def test_gemini_is_only_called_after_explicit_opt_in(monkeypatch):
+    calls = []
+
+    def fake_gemini(text):
+        calls.append(text)
+        return "Optional insight"
+
+    monkeypatch.setattr(resume_routes, "analyze_with_gemini", fake_gemini)
+    pdf = build_text_pdf(
+        "Python SQL React resume with enough selectable text for analysis."
+    )
+    response = client.post(
+        "/upload",
+        data={"include_ai": "true"},
+        files={"file": ("resume.pdf", pdf, "application/pdf")},
+    )
+    assert response.status_code == 200
+    assert response.json()["ai_analysis"] == "Optional insight"
+    assert response.json()["ai_enabled"] is True
+    assert len(calls) == 1
+    assert "resume" in calls[0].lower()

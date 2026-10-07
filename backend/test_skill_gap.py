@@ -1,113 +1,93 @@
-import sys
-import io
+"""Unit tests for skill extraction, normalization, and gap scoring."""
 
-# Ensure UTF-8 output encoding on Windows console
-if sys.platform == "win32":
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-
+from services.analyzer import analyze_resume
 from services.role_skills import (
     JOB_ROLE_REQUIREMENTS,
-    SKILL_NORMALIZATION_MAP,
+    calculate_skill_gap,
     normalize_skill,
     normalize_skill_list,
-    calculate_skill_gap,
 )
 from services.skill_extractor import extract_skills
-from services.pdf_parser import extract_text
 
-def test_normalization():
-    print("--- Test 1: Skill Normalization & Aliases ---")
-    test_cases = [
-        ("ml", "Machine Learning"),
-        ("ML", "Machine Learning"),
-        ("js", "JavaScript"),
-        ("JS", "JavaScript"),
-        ("reactjs", "React"),
-        ("React.js", "React"),
-        ("stats", "Statistics"),
-        ("Statistics", "Statistics"),
-        ("PowerBI", "Power BI"),
-        ("node", "Node.js"),
-        ("dsa", "Data Structures"),
-        ("oops", "OOP"),
-    ]
-    for raw, expected in test_cases:
-        actual = normalize_skill(raw)
-        assert actual == expected, f"Failed: normalize_skill('{raw}') was '{actual}', expected '{expected}'"
-        print(f"  [OK] {raw} -> {actual}")
 
-    # Test list normalization and deduplication
-    raw_list = ["ML", "Machine Learning", "js", "JavaScript", "ReactJS", "react", "Stats", "statistics", "Python", "py"]
-    normalized = normalize_skill_list(raw_list)
-    print("  Normalized list:", normalized)
-    assert "Machine Learning" in normalized
-    assert "JavaScript" in normalized
-    assert "React" in normalized
-    assert "Statistics" in normalized
-    assert "Python" in normalized
-    # Count occurrences
-    assert normalized.count("Machine Learning") == 1
-    assert normalized.count("JavaScript") == 1
-    assert normalized.count("React") == 1
-    print("  [OK] No duplicates and all canonical names correctly identified")
+def test_normalization_handles_aliases_and_ignores_non_strings():
+    cases = {
+        "ML": "Machine Learning",
+        "js": "JavaScript",
+        "React.js": "React",
+        "PowerBI": "Power BI",
+        "node": "Node.js",
+        "dsa": "Data Structures",
+        "C++": "C++",
+        "C#": "C#",
+        "  python   3  ": "Python",
+    }
+    for raw, expected in cases.items():
+        assert normalize_skill(raw) == expected
 
-def test_math_accuracy():
-    print("\n--- Test 2: Mathematical Accuracy of Skill Match % ---")
-    # Data Analyst requirements: Python, SQL, Excel, Power BI, Statistics, Data Analytics (total 6)
-    # Resume skills: Python, SQL, Data Analytics (3 matched, 3 missing: Excel, Power BI, Statistics)
+    skills = normalize_skill_list(
+        ["ML", "Machine Learning", "SQL", None, 7, "DSA", "C++"]
+    )
+    assert skills.count("Machine Learning") == 1
+    assert {"SQL", "Database", "Algorithms", "Data Structures", "Programming"}.issubset(
+        skills
+    )
+    assert normalize_skill_list(None) == []
+    assert normalize_skill_list("python") == ["Programming", "Python"]
+
+
+def test_data_analyst_gap_matches_expected_math():
     result = calculate_skill_gap(["Python", "SQL", "Data Analytics"], "Data Analyst")
-    print(f"  Target Role: {result['target_role']}")
-    print(f"  Required ({len(result['required_skills'])}): {result['required_skills']}")
-    print(f"  Matched ({len(result['matched_skills'])}): {result['matched_skills']}")
-    print(f"  Missing ({len(result['missing_skills'])}): {result['missing_skills']}")
-    print(f"  Match %: {result['match_percentage']}%")
-
+    assert result["required_skills"] == JOB_ROLE_REQUIREMENTS["Data Analyst"]
     assert result["matched_skills"] == ["Python", "SQL", "Data Analytics"]
     assert result["missing_skills"] == ["Excel", "Power BI", "Statistics"]
-    expected_pct = (3 / 6) * 100 # exactly 50%
-    assert result["match_percentage"] == expected_pct, f"Expected {expected_pct}%, got {result['match_percentage']}%"
-    print(f"  [OK] Mathematical formula verified: (3 / 6) * 100 = {expected_pct}%")
+    assert result["match_percentage"] == 50
+    assert len(result["recommendations"]) == len(result["missing_skills"])
 
-    # Recommendations check
-    print(f"  Recommendations count: {len(result['recommendations'])}")
-    for rec in result["recommendations"]:
-        print(f"    - {rec}")
-    assert any("Excel" in r for r in result["recommendations"])
-    assert any("Power BI" in r for r in result["recommendations"])
-    assert any("statistics" in r.lower() for r in result["recommendations"])
-    print("  [OK] Actionable recommendations directly match missing skills")
 
-def test_pdf_extraction_and_gap():
-    print("\n--- Test 3: Real PDF Parsing and Skill Gap Analysis ---")
-    cv_text = extract_text("uploads/CV_pdf.pdf")
-    assert len(cv_text) > 0, "Failed to extract text from uploads/CV_pdf.pdf"
-    extracted = extract_skills(cv_text)
-    print(f"  Extracted {len(extracted)} skills from CV_pdf.pdf: {extracted}")
+def test_unknown_role_falls_back_consistently():
+    result = calculate_skill_gap(["Python"], "Not a supported role")
+    assert result["target_role"] == "Data Analyst"
+    assert result["required_skills"] == JOB_ROLE_REQUIREMENTS["Data Analyst"]
 
-    # Analyze for Data Analyst
-    da_gap = calculate_skill_gap(extracted, "Data Analyst")
-    print(f"  Data Analyst Match: {da_gap['match_percentage']}%")
-    print(f"    Matched: {da_gap['matched_skills']}")
-    print(f"    Missing: {da_gap['missing_skills']}")
 
-    # Analyze for AI/ML Engineer
-    aiml_gap = calculate_skill_gap(extracted, "AI/ML Engineer")
-    print(f"  AI/ML Engineer Match: {aiml_gap['match_percentage']}%")
-    print(f"    Matched: {aiml_gap['matched_skills']}")
-    print(f"    Missing: {aiml_gap['missing_skills']}")
+def test_extractor_uses_boundaries_and_handles_punctuation():
+    text = "JavaScript, React.js, Node.js, C++, SQL, RESTful APIs and machine-learning."
+    skills = extract_skills(text)
+    assert {
+        "JavaScript",
+        "React",
+        "Node.js",
+        "C++",
+        "SQL",
+        "REST API",
+        "Machine Learning",
+    }.issubset(skills)
+    assert "Java" not in skills
+    assert "REST API" not in extract_skills("I need to rest after a long day.")
+    assert {"Data Structures", "Algorithms"}.issubset(extract_skills("DSA"))
+    assert extract_skills("") == []
 
-    # Test Empty PDF
-    empty_text = extract_text("uploads/ANKIT.pdf")
-    print(f"  Empty PDF text length: {len(empty_text)}")
-    assert len(empty_text) == 0
-    print("  [OK] Empty PDF correctly detected with 0 extracted text")
 
-if __name__ == "__main__":
-    try:
-        test_normalization()
-        test_math_accuracy()
-        test_pdf_extraction_and_gap()
-        print("\nAll Backend Tests PASSED Successfully! 🎉")
-    except Exception as e:
-        print(f"\nTEST FAILED: {e}")
-        sys.exit(1)
+def test_resume_score_is_bounded_and_explainable():
+    analysis = analyze_resume(
+        "Alex Doe alex@example.com\nSummary\nSkills\nPython SQL React\n"
+        "Experience\nImproved workflow by 25%\nEducation\nProjects\n"
+        + "Built useful software with clear documentation. "
+        * 60
+    )
+    assert 0 < analysis["score"] <= 100
+    assert set(analysis["score_breakdown"]) == {
+        "technical_skills",
+        "resume_sections",
+        "length",
+        "contact_details",
+        "measurable_impact",
+    }
+    assert analysis["score"] == int(sum(analysis["score_breakdown"].values()) + 0.5)
+    assert analysis["has_contact_details"] is True
+    assert analysis["has_quantified_impact"] is True
+    assert {"Summary", "Skills", "Experience", "Education", "Projects"}.issubset(
+        analysis["sections"]
+    )
+    assert analyze_resume("")["score"] == 0

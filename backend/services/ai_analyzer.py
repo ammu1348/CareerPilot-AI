@@ -1,33 +1,8 @@
-import os
-from dotenv import load_dotenv
-from google import genai
+"""Backward-compatible import for the optional Gemini analyzer."""
 
-# .env file load karega
-load_dotenv()
+from services.gemini_service import analyze_with_gemini
 
-client = genai.Client(
-    api_key=os.getenv("GEMINI_API_KEY")
-)
 
-def analyze_with_ai(resume_text):
-    prompt = f"""
-    Analyze this resume.
-
-    Resume:
-    {resume_text}
-
-    Give:
-    1. ATS Score (out of 100)
-    2. Missing Skills
-    3. Strengths
-    4. Weaknesses
-    5. Improvements
-    6. Recommended Job Roles
-    """
-
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
-
-    return response.text
+def analyze_with_ai(resume_text: str) -> str:
+    """Compatibility wrapper; safely returns a fallback when Gemini is unset."""
+    return analyze_with_gemini(resume_text)
